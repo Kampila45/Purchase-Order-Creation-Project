@@ -18,6 +18,10 @@ import time
 from itertools import cycle
 from fuzzywuzzy import process, fuzz
 
+# Configure for Azure App Service
+PORT = int(os.getenv('PORT', 8000))
+HOST = os.getenv('HOST', '0.0.0.0')
+
 # Initialize FastAPI App
 app = FastAPI(
     title="ProcureAI API",
@@ -35,7 +39,10 @@ app.add_middleware(
 )
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Redis Configuration
@@ -849,19 +856,10 @@ signal.signal(signal.SIGINT, signal_handler)
 if __name__ == "__main__":
     import uvicorn
     
-    config = uvicorn.Config(
-        app=app,
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info",
-        workers=1
+    # For local development
+    uvicorn.run(
+        "po_api:app",
+        host=HOST,
+        port=PORT,
+        reload=True if os.getenv('ENVIRONMENT') == 'development' else False
     )
-    
-    server = uvicorn.Server(config)
-    try:
-        print("Starting server... Press Ctrl+C to quit")
-        server.run()
-    except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
-        sys.exit(0)
