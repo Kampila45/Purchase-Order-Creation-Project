@@ -18,10 +18,10 @@ import time
 from itertools import cycle
 from fuzzywuzzy import process, fuzz
 
-# Initialize FastAPI App with metadata
+# Initialize FastAPI App
 app = FastAPI(
     title="ProcureAI API",
-    description="API for creating and managing purchase orders with intelligent vendor and item selection",
+    description="API for creating and managing purchase orders",
     version="1.0",
 )
 
@@ -38,18 +38,35 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Redis Configuration (if needed)
-redis_client = redis.Redis(
-    host='your-redis-host',
-    port=6379,
-    password='your-password',
-    ssl=True,
-    decode_responses=True,
-)
+# Redis Configuration
+try:
+    redis_client = redis.Redis(
+        host='social-rabbit-56166.upstash.io',
+        port=6379,
+        password='AdtmAAIjcDE5MzE4YzQ2NDcyY2E0ZTI3YTc3ZmNiYzBkYzBlYzk5YnAxMA',
+        ssl=True,
+        decode_responses=True
+    )
+    # Test Redis connection
+    redis_client.ping()
+    logger.info("Redis connection established successfully")
+    REDIS_ENABLED = True
+except ImportError:
+    logger.warning("Redis package not installed, continuing without caching")
+    REDIS_ENABLED = False
+    redis_client = None
+except redis.ConnectionError as e:
+    logger.warning(f"Redis connection failed: {str(e)}, continuing without caching")
+    REDIS_ENABLED = False
+    redis_client = None
+except Exception as e:
+    logger.warning(f"Redis error: {str(e)}, continuing without caching")
+    REDIS_ENABLED = False
+    redis_client = None
 
-# Update path to use formatted dataset
-BASE_PATH = r"C:\Users\NyashaKampila\Desktop\Projects\Purchase-Order-Creation-Project"
-PO_DATA_FILE = os.path.join(BASE_PATH, "PO Data_formatted.xlsx")
+# Update path to use environment variable or default
+BASE_PATH = os.getenv('PO_DATA_PATH', os.path.dirname(os.path.realpath(__file__)))
+PO_DATA_FILE = os.path.join(BASE_PATH, os.getenv('PO_DATA_FILE', 'PO Data_formatted.xlsx'))
 
 # ML Model class
 class InventoryPredictor:
