@@ -125,8 +125,27 @@ class ItemPrediction(BaseModel):
     confidence_score: Optional[float] = None
 
 class OrderItem(BaseModel):
-    item_name: str
-    predicted_quantity: float = Field(gt=0)
+    BillNumber: str
+    BillDate: str
+    DueDate: str
+    VendorID: str
+    VendorName: str
+    CustomerID: str = ""
+    CustomerName: str = ""
+    ItemName: str
+    Quantity: float
+    Rate: float
+    ItemTotal: float
+    Source: str = "Client"
+    PaymentTerms: str = "14"
+    CurrencySymbol: str = "ZMW"
+
+class PurchaseOrder(BaseModel):
+    po_number: str
+    created_date: str
+    total_amount: float
+    items: List[OrderItem]
+    status: str = "created"
 
 class PurchaseOrderRequest(BaseModel):
     vendor_id: Optional[str] = None
@@ -401,6 +420,83 @@ def get_item_details(item_name: str, vendor_id: str, df: pd.DataFrame) -> dict:
     except Exception as e:
         print(f"Error getting item details: {str(e)}")
         raise
+
+@app.post("/generate-po", response_model=PurchaseOrder)
+async def generate_purchase_order():
+    try:
+        # Get random vendor
+        vendor = data_manager.df[['VendorID', 'VendorName']].drop_duplicates().sample(n=1).iloc[0]
+        
+        # Get vendor's existing bill numbers to determine pattern
+        vendor_bills = data_manager.df[
+            data_manager.df['VendorID'] == vendor['VendorID']
+        ]['BillNumber'].unique()
+        
+        # Generate new bill number based on vendor's pattern
+        if len(vendor_bills) > 0:
+            # Extract numeric parts from existing bill numbers
+            numeric_parts = []
+            for bill in vendor_bills:
+                try:
+                    num = int(''.join(filter(str.isdigit, bill)))
+                    numeric_parts.append(num)
+                except ValueError:
+                    continue
+            
+            if numeric_parts:
+                # Generate new number higher than existing ones
+                new_num = max(numeric_parts) + np.random.randint(1, 10)
+                # Get prefix from existing bills (non-numeric part)
+                prefix = ''.join(filter(str.isalpha, vendor_bills[0]))
+                po_number = f"{prefix}{new_num}" if prefix else str(new_num)
+            else:
+                po_number = f"{vendor['VendorID']}-{np.random.randint(1000, 9999)}"
+        else:
+            po_number = f"{vendor['VendorID']}-{np.random.randint(1000, 9999)}"
+        
+        # Get items for this vendor
+        vendor_items = data_manager.df[
+            data_manager.df['VendorID'] == vendor['VendorID']
+        ][['ItemName', 'Rate']].drop_duplicates()
+        
+        # Select 1-3 random items
+        num_items = np.random.randint(1, 4)
+        selected_items = vendor_items.sample(n=min(num_items, len(vendor_items)))
+        
+        # Generate items with random quantities
+        items = []
+        total_amount = 0
+        today = datetime.now().strftime("%Y-%m-%d")
+        due_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
+        
+        for _, item in selected_items.iterrows():
+            quantity = np.random.randint(1, 21)  # Random quantity 1-20
+            rate = float(item['Rate'])
+            item_total = quantity * rate
+            total_amount += item_total
+            
+            items.append(OrderItem(
+                BillNumber=po_number,
+                BillDate=today,
+                DueDate=due_date,
+                VendorID=vendor['VendorID'],
+                VendorName=vendor['VendorName'],
+                ItemName=item['ItemName'],
+                Quantity=quantity,
+                Rate=rate,
+                ItemTotal=item_total
+            ))
+        
+        return PurchaseOrder(
+            po_number=po_number,
+            created_date=today,
+            total_amount=total_amount,
+            items=items
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating purchase order: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/create-purchase-order", response_model=PurchaseOrderResponse)
 async def create_purchase_order(request: PurchaseOrderRequest):
