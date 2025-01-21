@@ -377,40 +377,82 @@ def get_random_vendor_items(vendor_id: str, df: pd.DataFrame, num_items: int = N
         print(f"Error getting vendor items: {str(e)}")
         raise
 
+def get_item_details(item_name: str, vendor_id: str, df: pd.DataFrame) -> dict:
+    """Get item details from dataset for specific vendor"""
+    try:
+        # Filter for this vendor and item
+        vendor_items = df[
+            (df['VendorID'] == vendor_id) & 
+            (df['ItemName'] == item_name)
+        ].drop_duplicates()
+        
+        if vendor_items.empty:
+            raise ValueError(f"No matching item found for vendor {vendor_id}")
+            
+        # Get the most recent entry
+        item_data = vendor_items.iloc[-1]
+        
+        return {
+            'ItemName': item_data['ItemName'],
+            'Rate': float(str(item_data['Rate']).replace(',', '')),
+            'Quantity': float(item_data['Quantity']),
+            'ItemTotal': float(str(item_data['ItemTotal']).replace(',', ''))
+        }
+    except Exception as e:
+        print(f"Error getting item details: {str(e)}")
+        raise
+
 @app.post("/api/v1/create-purchase-order", response_model=PurchaseOrderResponse)
 async def create_purchase_order(request: PurchaseOrderRequest):
     try:
-        # Load DataFrame
+        # Load DataFrame and create reference sets
         df = pd.read_excel(PO_DATA_FILE, sheet_name='Orders')
         
-        # Get random vendor instead of using request
-        valid_vendor = get_random_vendor(df)
-        print(f"Selected vendor: {valid_vendor['VendorName']} ({valid_vendor['VendorID']})")
+        # Validate vendor
+        vendor_match = df[
+            (df['VendorID'] == request.vendor_id) & 
+            (df['VendorName'] == request.vendor_name)
+        ].drop_duplicates()
         
-        # Get random customer
-        valid_customer = get_random_customer(df)
-        print(f"Selected customer: {valid_customer['CustomerName']} ({valid_customer['CustomerID']})")
+        if vendor_match.empty:
+            vendor_list = df[['VendorID', 'VendorName']].drop_duplicates().apply(
+                lambda x: f"- {x['VendorName']} ({x['VendorID']})", axis=1
+            ).tolist()
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid vendor information. Available vendors:\n\n" + 
+                       "\n".join(vendor_list)
+            )
+            
+        valid_vendor = vendor_match.iloc[0]
         
         # Get vendor-specific bill number
         bill_number = get_vendor_specific_bill_number(valid_vendor['VendorID'], df)
-        print(f"Using bill number: {bill_number}")
+        print(f"Using vendor bill number: {bill_number}")
         
-        # Get random items for this vendor
-        vendor_items = get_random_vendor_items(valid_vendor['VendorID'], df)
-        
-        # Process items
+        # Process and validate items
         processed_items = []
         total_amount = 0
         
-        for item_details in vendor_items:
+        for item in request.items:
+            # Get item details from dataset
+            try:
+                item_details = get_item_details(item.item_name, valid_vendor['VendorID'], df)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Error with item {item.item_name}: {str(e)}"
+                )
+            
+            # Use the actual quantities and rates from dataset
             processed_item = {
                 'BillNumber': bill_number,
                 'BillDate': datetime.now().strftime('%Y-%m-%d'),
                 'DueDate': calculate_due_date(datetime.now()).strftime('%Y-%m-%d'),
                 'VendorID': valid_vendor['VendorID'],
                 'VendorName': valid_vendor['VendorName'],
-                'CustomerID': valid_customer['CustomerID'],
-                'CustomerName': valid_customer['CustomerName'],
+                'CustomerID': request.customer_id,
+                'CustomerName': request.customer_name,
                 'ItemName': item_details['ItemName'],
                 'Quantity': item_details['Quantity'],
                 'Rate': item_details['Rate'],
@@ -431,6 +473,8 @@ async def create_purchase_order(request: PurchaseOrderRequest):
             status="created"
         )
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -825,13 +869,13 @@ async def get_available_bill_numbers():
     }
 
 # Add an endpoint to see available items for a vendor
-@app.get("/api/v1/vendors/{vendor_id}/items")
-async def get_vendor_available_items(vendor_id: str):
+@app.get("/api/v1/vendors/{vendor_id}/available-items")
+async def get_vendor_items(vendor_id: str):
     """Get list of available items for a vendor"""
     try:
         df = pd.read_excel(PO_DATA_FILE, sheet_name='Orders')
         vendor_items = df[df['VendorID'] == vendor_id][
-            ['ItemName', 'Rate', 'Quantity']
+            ['ItemName', 'Rate', 'Quantity', 'ItemTotal']
         ].drop_duplicates().to_dict('records')
         
         return {
