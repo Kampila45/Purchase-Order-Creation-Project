@@ -12,3 +12,4 @@ pydantic==2.5.3
 starlette==0.35.0
 fuzzywuzzy==0.18.0
 python-Levenshtein==0.23.0
+scikit-learn==1.0.2
