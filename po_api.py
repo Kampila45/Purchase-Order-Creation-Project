@@ -1,10 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta
+import logging
+import redis
+import json
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -12,8 +16,36 @@ import signal
 import sys
 import time
 from itertools import cycle
+from fuzzywuzzy import process, fuzz
 
-app = FastAPI(title="Purchase Order Creation API")
+# Initialize FastAPI App with metadata
+app = FastAPI(
+    title="ProcureAI API",
+    description="API for creating and managing purchase orders with intelligent vendor and item selection",
+    version="1.0",
+)
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Redis Configuration (if needed)
+redis_client = redis.Redis(
+    host='your-redis-host',
+    port=6379,
+    password='your-password',
+    ssl=True,
+    decode_responses=True,
+)
 
 # Update path to use formatted dataset
 BASE_PATH = r"C:\Users\NyashaKampila\Desktop\Projects\Purchase-Order-Creation-Project"
@@ -101,6 +133,84 @@ class PurchaseOrderResponse(BaseModel):
     total_amount: float
     items: List[dict]
     status: str
+
+class DataManager:
+    def __init__(self):
+        self.df = None
+        self.vendors = None
+        self.customers = None
+        self.items = None
+        self.load_data()
+
+    def load_data(self):
+        """Load and cache data from Excel file"""
+        try:
+            self.df = pd.read_excel(PO_DATA_FILE, sheet_name='Orders')
+            self.vendors = self.df[['VendorID', 'VendorName']].drop_duplicates()
+            self.customers = self.df[['CustomerID', 'CustomerName']].drop_duplicates()
+            self.items = self.df[['ItemName', 'Rate', 'VendorID']].drop_duplicates()
+            logger.info("Data loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading data: {str(e)}")
+            raise
+
+    def get_random_vendor(self) -> dict:
+        """Get a random vendor from dataset"""
+        vendor = self.vendors.sample(n=1).iloc[0]
+        return {
+            'VendorID': vendor['VendorID'],
+            'VendorName': vendor['VendorName']
+        }
+
+    def get_random_customer(self) -> dict:
+        """Get a random customer from dataset"""
+        customer = self.customers.sample(n=1).iloc[0]
+        return {
+            'CustomerID': customer['CustomerID'],
+            'CustomerName': customer['CustomerName']
+        }
+
+    def get_vendor_items(self, vendor_id: str, num_items: int = None) -> list:
+        """Get random items for a vendor with actual rates"""
+        try:
+            vendor_items = self.df[self.df['VendorID'] == vendor_id].drop_duplicates(subset=['ItemName'])
+            
+            if vendor_items.empty:
+                raise ValueError(f"No items found for vendor {vendor_id}")
+            
+            if num_items is None:
+                num_items = np.random.randint(1, min(4, len(vendor_items) + 1))
+                
+            selected_items = []
+            sampled_items = vendor_items.sample(n=min(num_items, len(vendor_items)))
+            
+            for _, item in sampled_items.iterrows():
+                selected_items.append({
+                    'ItemName': item['ItemName'],
+                    'Rate': float(str(item['Rate']).replace(',', '')),
+                    'Quantity': float(item['Quantity']),
+                    'ItemTotal': float(str(item['ItemTotal']).replace(',', ''))
+                })
+                
+            return selected_items
+            
+        except Exception as e:
+            logger.error(f"Error getting vendor items: {str(e)}")
+            raise
+
+    def get_vendor_bill_number(self, vendor_id: str) -> str:
+        """Get a bill number specific to vendor"""
+        try:
+            vendor_bills = self.df[self.df['VendorID'] == vendor_id]['BillNumber'].unique()
+            if len(vendor_bills) > 0:
+                return np.random.choice(vendor_bills)
+            return "PO-001"
+        except Exception as e:
+            logger.error(f"Error getting vendor bill number: {str(e)}")
+            return "PO-001"
+
+# Create global instance
+data_manager = DataManager()
 
 # Helper functions
 def load_data():
