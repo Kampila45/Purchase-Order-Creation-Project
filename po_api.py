@@ -365,60 +365,28 @@ def get_random_customer(df: pd.DataFrame) -> dict:
         'CustomerName': customer['CustomerName']
     }
 
-def get_random_vendor_items(vendor_id: str, df: pd.DataFrame, num_items: int = None) -> list:
-    """Get random items from vendor's available items in dataset"""
+def get_random_vendor_item(vendor_id: str, df: pd.DataFrame) -> dict:
+    """Get a random item from vendor's available items in dataset"""
     try:
         # Get all items for this vendor
-        vendor_items = df[df['VendorID'] == vendor_id].drop_duplicates(subset=['ItemName'])
-        
-        if vendor_items.empty:
-            raise ValueError(f"No items found for vendor {vendor_id}")
-        
-        # Determine number of items to select
-        if num_items is None:
-            num_items = np.random.randint(1, min(4, len(vendor_items) + 1))
-            
-        # Select random items
-        selected_items = []
-        sampled_items = vendor_items.sample(n=min(num_items, len(vendor_items)))
-        
-        for _, item in sampled_items.iterrows():
-            selected_items.append({
-                'ItemName': item['ItemName'],
-                'Rate': float(str(item['Rate']).replace(',', '')),
-                'Quantity': float(item['Quantity']),
-                'ItemTotal': float(str(item['ItemTotal']).replace(',', ''))
-            })
-            
-        return selected_items
-        
-    except Exception as e:
-        print(f"Error getting vendor items: {str(e)}")
-        raise
-
-def get_item_details(item_name: str, vendor_id: str, df: pd.DataFrame) -> dict:
-    """Get item details from dataset for specific vendor"""
-    try:
-        # Filter for this vendor and item
-        vendor_items = df[
-            (df['VendorID'] == vendor_id) & 
-            (df['ItemName'] == item_name)
+        vendor_items = df[df['VendorID'] == vendor_id][
+            ['ItemName', 'Rate', 'Quantity', 'ItemTotal']
         ].drop_duplicates()
         
         if vendor_items.empty:
-            raise ValueError(f"No matching item found for vendor {vendor_id}")
+            raise ValueError(f"No items found for vendor {vendor_id}")
             
-        # Get the most recent entry
-        item_data = vendor_items.iloc[-1]
+        # Select a random item
+        item = vendor_items.sample(n=1).iloc[0]
         
         return {
-            'ItemName': item_data['ItemName'],
-            'Rate': float(str(item_data['Rate']).replace(',', '')),
-            'Quantity': float(item_data['Quantity']),
-            'ItemTotal': float(str(item_data['ItemTotal']).replace(',', ''))
+            'ItemName': item['ItemName'],
+            'Rate': float(str(item['Rate']).replace(',', '')),
+            'Quantity': float(item['Quantity']),
+            'ItemTotal': float(str(item['ItemTotal']).replace(',', ''))
         }
     except Exception as e:
-        print(f"Error getting item details: {str(e)}")
+        print(f"Error getting vendor item: {str(e)}")
         raise
 
 @app.post("/generate-po", response_model=PurchaseOrder)
@@ -522,44 +490,54 @@ async def create_purchase_order(request: PurchaseOrderRequest):
             
         valid_vendor = vendor_match.iloc[0]
         
+        # Get random customer from dataset
+        valid_customer = get_random_customer(df)
+        
         # Get vendor-specific bill number
         bill_number = get_vendor_specific_bill_number(valid_vendor['VendorID'], df)
         print(f"Using vendor bill number: {bill_number}")
         
-        # Process and validate items
+        # Process items - ignore requested items and use random ones from dataset
         processed_items = []
         total_amount = 0
         
-        for item in request.items:
-            # Get item details from dataset
+        # Randomly select 1-3 items from vendor's available items
+        num_items = np.random.randint(1, 4)
+        
+        for _ in range(num_items):
             try:
-                item_details = get_item_details(item.item_name, valid_vendor['VendorID'], df)
+                # Get random item for this vendor
+                item_details = get_random_vendor_item(valid_vendor['VendorID'], df)
+                
+                processed_item = {
+                    'BillNumber': bill_number,
+                    'BillDate': datetime.now().strftime('%Y-%m-%d'),
+                    'DueDate': calculate_due_date(datetime.now()).strftime('%Y-%m-%d'),
+                    'VendorID': valid_vendor['VendorID'],
+                    'VendorName': valid_vendor['VendorName'],
+                    'CustomerID': valid_customer['CustomerID'],
+                    'CustomerName': valid_customer['CustomerName'],
+                    'ItemName': item_details['ItemName'],
+                    'Quantity': item_details['Quantity'],
+                    'Rate': item_details['Rate'],
+                    'ItemTotal': item_details['ItemTotal'],
+                    'Source': 'Client',
+                    'PaymentTerms': '14',
+                    'CurrencySymbol': 'ZMW'
+                }
+                
+                processed_items.append(processed_item)
+                total_amount += item_details['ItemTotal']
+                
             except Exception as e:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Error with item {item.item_name}: {str(e)}"
-                )
-            
-            # Use the actual quantities and rates from dataset
-            processed_item = {
-                'BillNumber': bill_number,
-                'BillDate': datetime.now().strftime('%Y-%m-%d'),
-                'DueDate': calculate_due_date(datetime.now()).strftime('%Y-%m-%d'),
-                'VendorID': valid_vendor['VendorID'],
-                'VendorName': valid_vendor['VendorName'],
-                'CustomerID': request.customer_id,
-                'CustomerName': request.customer_name,
-                'ItemName': item_details['ItemName'],
-                'Quantity': item_details['Quantity'],
-                'Rate': item_details['Rate'],
-                'ItemTotal': item_details['ItemTotal'],
-                'Source': 'Client',
-                'PaymentTerms': '14',
-                'CurrencySymbol': 'ZMW'
-            }
-            
-            processed_items.append(processed_item)
-            total_amount += item_details['ItemTotal']
+                print(f"Error processing item: {str(e)}")
+                continue
+
+        if not processed_items:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No valid items found for vendor {valid_vendor['VendorName']}"
+            )
 
         return PurchaseOrderResponse(
             po_number=bill_number,
@@ -965,13 +943,13 @@ async def get_available_bill_numbers():
     }
 
 # Add an endpoint to see available items for a vendor
-@app.get("/api/v1/vendors/{vendor_id}/available-items")
-async def get_vendor_items(vendor_id: str):
+@app.get("/api/v1/vendors/{vendor_id}/items")
+async def get_vendor_available_items(vendor_id: str):
     """Get list of available items for a vendor"""
     try:
         df = pd.read_excel(PO_DATA_FILE, sheet_name='Orders')
         vendor_items = df[df['VendorID'] == vendor_id][
-            ['ItemName', 'Rate', 'Quantity', 'ItemTotal']
+            ['ItemName', 'Rate', 'Quantity']
         ].drop_duplicates().to_dict('records')
         
         return {
