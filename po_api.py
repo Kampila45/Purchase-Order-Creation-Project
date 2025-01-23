@@ -76,6 +76,16 @@ except Exception as e:
 BASE_PATH = os.getenv('PO_DATA_PATH', os.path.dirname(os.path.realpath(__file__)))
 PO_DATA_FILE = os.path.join(BASE_PATH, os.getenv('PO_DATA_FILE', 'PO Data_formatted.xlsx'))
 
+# Define product categories
+class ProductCategory(str, Enum):
+    ALL = "All Categories"
+    MEAT = "Meat & Poultry"
+    SEAFOOD = "Fish & Seafood"
+    DAIRY = "Dairy & Eggs"
+    GROCERIES = "Groceries"
+    BEVERAGES = "Beverages"
+    OTHER = "Other Products"
+
 # ML Model class
 class InventoryPredictor:
     def __init__(self):
@@ -991,15 +1001,6 @@ def signal_handler(sig, frame):
 
 # Register the signal handler
 signal.signal(signal.SIGINT, signal_handler)
-
-class ProductCategory(str, Enum):
-    ALL = "All Categories"
-    MEAT = "Meat & Poultry"
-    SEAFOOD = "Fish & Seafood"
-    DAIRY = "Dairy & Eggs"
-    GROCERIES = "Groceries"
-    BEVERAGES = "Beverages"
-    OTHER = "Other Products"
 
 def categorize_item(item_name: str) -> str:
     """Categorize items based on actual dataset products"""
