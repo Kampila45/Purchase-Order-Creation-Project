@@ -85,6 +85,7 @@ class ProductCategory(str, Enum):
     GROCERIES = "Groceries"
     BEVERAGES = "Beverages"
     OTHER = "Other Products"
+    PRODUCE = "Fruits & Vegetables"
 
 # ML Model class
 class InventoryPredictor:
@@ -874,6 +875,14 @@ async def get_items_by_customer(customer_name: str):
 def categorize_item(item_name: str) -> str:
     """Categorize items based on actual dataset products"""
     item_name = item_name.lower()
+    
+    # Fruits & Vegetables
+    if any(produce in item_name for produce in [
+        'apple', 'banana', 'orange', 'tomato', 'potato', 'onion',
+        'cabbage', 'carrot', 'fruit', 'veg', 'vegetables',
+        'lettuce', 'cucumber', 'pepper', 'garlic'
+    ]):
+        return ProductCategory.PRODUCE
     
     # Meat & Poultry
     if any(meat in item_name for meat in [
