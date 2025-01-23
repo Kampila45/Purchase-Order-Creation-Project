@@ -17,6 +17,7 @@ import sys
 import time
 from itertools import cycle
 from fuzzywuzzy import process, fuzz
+from enum import Enum
 
 # Configure for Azure App Service
 PORT = int(os.getenv('PORT', 8000))
@@ -970,6 +971,192 @@ def signal_handler(sig, frame):
 
 # Register the signal handler
 signal.signal(signal.SIGINT, signal_handler)
+
+class ProductCategory(str, Enum):
+    MEAT = "Meat & Poultry"
+    SEAFOOD = "Fish & Seafood"
+    DAIRY = "Dairy & Eggs"
+    GROCERIES = "Groceries"
+    BEVERAGES = "Beverages"
+    OTHER = "Other Products"
+
+def categorize_item(item_name: str) -> str:
+    """Categorize items based on actual dataset products"""
+    item_name = item_name.lower()
+    
+    # Meat & Poultry
+    if any(meat in item_name for meat in [
+        'beef', 'chicken', 'pork', 'lamb', 'meat', 'sausage', 'bacon', 
+        'mince', 'cubes', 'fillet', 'drumstick', 'wing'
+    ]):
+        return ProductCategory.MEAT
+    
+    # Fish & Seafood
+    elif any(seafood in item_name for meat in [
+        'fish', 'kapenta', 'bream', 'tilapia', 'seafood', 'prawns'
+    ]):
+        return ProductCategory.SEAFOOD
+    
+    # Dairy & Eggs
+    elif any(dairy in item_name for dairy in [
+        'milk', 'cheese', 'yogurt', 'eggs', 'butter', 'cream'
+    ]):
+        return ProductCategory.DAIRY
+    
+    # Beverages
+    elif any(beverage in item_name for beverage in [
+        'juice', 'water', 'drink', 'soda', 'beer', 'wine'
+    ]):
+        return ProductCategory.BEVERAGES
+    
+    # Groceries
+    elif any(grocery in item_name for grocery in [
+        'rice', 'sugar', 'flour', 'oil', 'bread', 'pasta', 'maize'
+    ]):
+        return ProductCategory.GROCERIES
+    
+    # Default category
+    return ProductCategory.OTHER
+
+class ItemResponse(BaseModel):
+    item_name: str
+    category: str
+    rate: float
+    vendor_name: str
+    vendor_id: str
+
+@app.get("/api/v1/items/categorized")
+async def get_categorized_items():
+    """Get list of items grouped by category"""
+    try:
+        # Get items from data manager
+        items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
+        
+        # Create list of items with categories
+        categorized_items = []
+        for _, row in items_df.iterrows():
+            try:
+                rate = float(str(row['Rate']).replace(',', ''))
+            except (ValueError, TypeError):
+                rate = 0.0
+                
+            item = ItemResponse(
+                item_name=row['ItemName'],
+                category=categorize_item(row['ItemName']),
+                rate=rate,
+                vendor_name=row['VendorName'],
+                vendor_id=row['VendorID']
+            )
+            categorized_items.append(item)
+        
+        # Sort items by category and name
+        categorized_items.sort(key=lambda x: (x.category, x.item_name))
+        
+        # Group items by category
+        grouped_items = {}
+        for category in ProductCategory:
+            category_items = [item for item in categorized_items if item.category == category]
+            if category_items:  # Only include categories that have items
+                grouped_items[category] = category_items
+        
+        # Calculate statistics
+        category_stats = []
+        for category, items in grouped_items.items():
+            total_value = sum(item.rate for item in items)
+            avg_price = total_value / len(items) if items else 0
+            
+            category_stats.append({
+                "category": category,
+                "items": items,
+                "item_count": len(items),
+                "statistics": {
+                    "total_items": len(items),
+                    "average_price": round(avg_price, 2),
+                    "price_range": {
+                        "min": round(min(item.rate for item in items), 2),
+                        "max": round(max(item.rate for item in items), 2)
+                    }
+                }
+            })
+        
+        return {
+            "status": "success",
+            "categories": category_stats,
+            "total_items": len(categorized_items),
+            "summary": {
+                "total_categories": len(category_stats),
+                "total_products": len(categorized_items),
+                "categories_distribution": {
+                    category["category"]: category["item_count"] 
+                    for category in category_stats
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching categorized items: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching items: {str(e)}"
+        )
+
+@app.get("/api/v1/items/category/{category}")
+async def get_items_by_category(category: ProductCategory):
+    """Get items for a specific category"""
+    try:
+        items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
+        
+        categorized_items = []
+        for _, row in items_df.iterrows():
+            if categorize_item(row['ItemName']) == category:
+                try:
+                    rate = float(str(row['Rate']).replace(',', ''))
+                except (ValueError, TypeError):
+                    rate = 0.0
+                    
+                item = ItemResponse(
+                    item_name=row['ItemName'],
+                    category=category,
+                    rate=rate,
+                    vendor_name=row['VendorName'],
+                    vendor_id=row['VendorID']
+                )
+                categorized_items.append(item)
+        
+        # Sort by item name
+        categorized_items.sort(key=lambda x: x.item_name)
+        
+        # Calculate category statistics
+        if categorized_items:
+            avg_price = sum(item.rate for item in categorized_items) / len(categorized_items)
+            price_range = {
+                "min": min(item.rate for item in categorized_items),
+                "max": max(item.rate for item in categorized_items)
+            }
+        else:
+            avg_price = 0
+            price_range = {"min": 0, "max": 0}
+        
+        return {
+            "status": "success",
+            "category": category,
+            "items": categorized_items,
+            "statistics": {
+                "total_items": len(categorized_items),
+                "average_price": round(avg_price, 2),
+                "price_range": {
+                    "min": round(price_range["min"], 2),
+                    "max": round(price_range["max"], 2)
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching items for category {category}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching items: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
