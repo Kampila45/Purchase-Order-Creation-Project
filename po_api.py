@@ -827,53 +827,6 @@ async def get_items_by_vendor(vendor_name: str):
             detail=f"Error fetching items: {str(e)}"
         )
 
-@app.get("/api/v1/vendors/{vendor_id}/items")
-async def get_items_by_vendor_id(vendor_id: str):
-    """Get list of items filtered by vendor ID"""
-    try:
-        df = load_data()
-        
-        # Clean vendor ID and make case-insensitive comparison
-        vendor_id = vendor_id.strip().upper()
-        
-        # Filter items for the specified vendor ID
-        vendor_items = df[df['VendorID'].str.upper() == vendor_id][
-            ['ItemName', 'Rate', 'VendorName', 'VendorID']
-        ].drop_duplicates()
-        
-        if vendor_items.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No items found for vendor ID: {vendor_id}"
-            )
-        
-        items = []
-        for _, item in vendor_items.iterrows():
-            items.append({
-                "item_name": item['ItemName'],
-                "rate": float(str(item['Rate']).replace(',', '')),
-                "vendor_name": item['VendorName'],
-                "vendor_id": item['VendorID']
-            })
-            
-        return {
-            "status": "success",
-            "vendor": {
-                "id": vendor_id,
-                "name": vendor_items['VendorName'].iloc[0]
-            },
-            "count": len(items),
-            "items": items
-        }
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching items: {str(e)}"
-        )
-
 @app.get("/api/v1/items/customer/{customer_name}")
 async def get_items_by_customer(customer_name: str):
     """Get list of items filtered by customer"""
@@ -918,92 +871,6 @@ async def get_items_by_customer(customer_name: str):
             detail=f"Error fetching items: {str(e)}"
         )
 
-@app.get("/api/v1/customers/{customer_id}/items")
-async def get_items_by_customer_id(customer_id: str):
-    """Get list of items filtered by customer ID"""
-    try:
-        df = load_data()
-        
-        # Clean customer ID and make case-insensitive comparison
-        customer_id = customer_id.strip().upper()
-        
-        # Filter items for the specified customer ID
-        customer_items = df[df['CustomerID'].str.upper() == customer_id][
-            ['ItemName', 'Rate', 'CustomerName', 'CustomerID', 'VendorName']
-        ].drop_duplicates()
-        
-        if customer_items.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No items found for customer ID: {customer_id}"
-            )
-        
-        items = []
-        for _, item in customer_items.iterrows():
-            items.append({
-                "item_name": item['ItemName'],
-                "rate": float(str(item['Rate']).replace(',', '')),
-                "customer_name": item['CustomerName'],
-                "customer_id": item['CustomerID'],
-                "vendor_name": item['VendorName']
-            })
-            
-        return {
-            "status": "success",
-            "customer": {
-                "id": customer_id,
-                "name": customer_items['CustomerName'].iloc[0]
-            },
-            "count": len(items),
-            "items": items
-        }
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching items: {str(e)}"
-        )
-
-@app.get("/api/v1/available-bill-numbers")
-async def get_available_bill_numbers():
-    """Get list of available bill numbers"""
-    return {
-        "status": "success",
-        "count": len(bill_manager.bill_numbers),
-        "bill_numbers": bill_manager.bill_numbers
-    }
-
-# Add an endpoint to see available items for a vendor
-@app.get("/api/v1/vendors/{vendor_id}/items")
-async def get_vendor_available_items(vendor_id: str):
-    """Get list of available items for a vendor"""
-    try:
-        df = pd.read_excel(PO_DATA_FILE, sheet_name='Orders')
-        vendor_items = df[df['VendorID'] == vendor_id][
-            ['ItemName', 'Rate', 'Quantity']
-        ].drop_duplicates().to_dict('records')
-        
-        return {
-            "status": "success",
-            "vendor_id": vendor_id,
-            "count": len(vendor_items),
-            "items": vendor_items
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching vendor items: {str(e)}"
-        )
-
-def signal_handler(sig, frame):
-    print('\nShutting down gracefully...')
-    sys.exit(0)
-
-# Register the signal handler
-signal.signal(signal.SIGINT, signal_handler)
-
 def categorize_item(item_name: str) -> str:
     """Categorize items based on actual dataset products"""
     item_name = item_name.lower()
@@ -1016,26 +883,30 @@ def categorize_item(item_name: str) -> str:
         return ProductCategory.MEAT
     
     # Fish & Seafood
-    elif any(seafood in item_name for meat in [
-        'fish', 'kapenta', 'bream', 'tilapia', 'seafood', 'prawns'
+    elif any(seafood in item_name for seafood in [
+        'fish', 'kapenta', 'bream', 'tilapia', 'seafood', 'prawns',
+        'sardines', 'tuna'
     ]):
         return ProductCategory.SEAFOOD
     
     # Dairy & Eggs
     elif any(dairy in item_name for dairy in [
-        'milk', 'cheese', 'yogurt', 'eggs', 'butter', 'cream'
+        'milk', 'cheese', 'yogurt', 'eggs', 'butter', 'cream',
+        'dairy', 'margarine', 'yoghurt'
     ]):
         return ProductCategory.DAIRY
     
     # Beverages
     elif any(beverage in item_name for beverage in [
-        'juice', 'water', 'drink', 'soda', 'beer', 'wine'
+        'juice', 'water', 'drink', 'soda', 'beer', 'wine',
+        'tea', 'coffee', 'beverage', 'cola'
     ]):
         return ProductCategory.BEVERAGES
     
     # Groceries
     elif any(grocery in item_name for grocery in [
-        'rice', 'sugar', 'flour', 'oil', 'bread', 'pasta', 'maize'
+        'rice', 'sugar', 'flour', 'oil', 'bread', 'pasta', 'maize',
+        'meal', 'beans', 'salt', 'cereal', 'mealie'
     ]):
         return ProductCategory.GROCERIES
     
@@ -1048,139 +919,6 @@ class ItemResponse(BaseModel):
     rate: float
     vendor_name: str
     vendor_id: str
-
-@app.get("/api/v1/items/categorized")
-async def get_categorized_items():
-    """Get list of items grouped by category"""
-    try:
-        # Get items from data manager
-        items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
-        
-        # Create list of items with categories
-        categorized_items = []
-        for _, row in items_df.iterrows():
-            try:
-                rate = float(str(row['Rate']).replace(',', ''))
-            except (ValueError, TypeError):
-                rate = 0.0
-                
-            item = ItemResponse(
-                item_name=row['ItemName'],
-                category=categorize_item(row['ItemName']),
-                rate=rate,
-                vendor_name=row['VendorName'],
-                vendor_id=row['VendorID']
-            )
-            categorized_items.append(item)
-        
-        # Sort items by category and name
-        categorized_items.sort(key=lambda x: (x.category, x.item_name))
-        
-        # Group items by category
-        grouped_items = {}
-        for category in ProductCategory:
-            category_items = [item for item in categorized_items if item.category == category]
-            if category_items:  # Only include categories that have items
-                grouped_items[category] = category_items
-        
-        # Calculate statistics
-        category_stats = []
-        for category, items in grouped_items.items():
-            total_value = sum(item.rate for item in items)
-            avg_price = total_value / len(items) if items else 0
-            
-            category_stats.append({
-                "category": category,
-                "items": items,
-                "item_count": len(items),
-                "statistics": {
-                    "total_items": len(items),
-                    "average_price": round(avg_price, 2),
-                    "price_range": {
-                        "min": round(min(item.rate for item in items), 2),
-                        "max": round(max(item.rate for item in items), 2)
-                    }
-                }
-            })
-        
-        return {
-            "status": "success",
-            "categories": category_stats,
-            "total_items": len(categorized_items),
-            "summary": {
-                "total_categories": len(category_stats),
-                "total_products": len(categorized_items),
-                "categories_distribution": {
-                    category["category"]: category["item_count"] 
-                    for category in category_stats
-                }
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error fetching categorized items: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching items: {str(e)}"
-        )
-
-@app.get("/api/v1/items/category/{category}")
-async def get_items_by_category(category: ProductCategory):
-    """Get items for a specific category"""
-    try:
-        items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
-        
-        categorized_items = []
-        for _, row in items_df.iterrows():
-            if categorize_item(row['ItemName']) == category:
-                try:
-                    rate = float(str(row['Rate']).replace(',', ''))
-                except (ValueError, TypeError):
-                    rate = 0.0
-                    
-                item = ItemResponse(
-                    item_name=row['ItemName'],
-                    category=category,
-                    rate=rate,
-                    vendor_name=row['VendorName'],
-                    vendor_id=row['VendorID']
-                )
-                categorized_items.append(item)
-        
-        # Sort by item name
-        categorized_items.sort(key=lambda x: x.item_name)
-        
-        # Calculate category statistics
-        if categorized_items:
-            avg_price = sum(item.rate for item in categorized_items) / len(categorized_items)
-            price_range = {
-                "min": min(item.rate for item in categorized_items),
-                "max": max(item.rate for item in categorized_items)
-            }
-        else:
-            avg_price = 0
-            price_range = {"min": 0, "max": 0}
-        
-        return {
-            "status": "success",
-            "category": category,
-            "items": categorized_items,
-            "statistics": {
-                "total_items": len(categorized_items),
-                "average_price": round(avg_price, 2),
-                "price_range": {
-                    "min": round(price_range["min"], 2),
-                    "max": round(price_range["max"], 2)
-                }
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error fetching items for category {category}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching items: {str(e)}"
-        )
 
 if __name__ == "__main__":
     import uvicorn
