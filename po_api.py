@@ -82,9 +82,6 @@ class ProductCategory(str, Enum):
     MEAT = "Meat & Poultry"
     SEAFOOD = "Fish & Seafood"
     DAIRY = "Dairy & Eggs"
-    GROCERIES = "Groceries"
-    BEVERAGES = "Beverages"
-    OTHER = "Other Products"
     PRODUCE = "Fruits & Vegetables"
 
 # ML Model class
@@ -885,7 +882,7 @@ def categorize_item(item_name: str) -> str:
         return ProductCategory.PRODUCE
     
     # Meat & Poultry
-    if any(meat in item_name for meat in [
+    elif any(meat in item_name for meat in [
         'beef', 'chicken', 'pork', 'lamb', 'meat', 'sausage', 'bacon', 
         'mince', 'cubes', 'fillet', 'drumstick', 'wing'
     ]):
@@ -905,22 +902,8 @@ def categorize_item(item_name: str) -> str:
     ]):
         return ProductCategory.DAIRY
     
-    # Beverages
-    elif any(beverage in item_name for beverage in [
-        'juice', 'water', 'drink', 'soda', 'beer', 'wine',
-        'tea', 'coffee', 'beverage', 'cola'
-    ]):
-        return ProductCategory.BEVERAGES
-    
-    # Groceries
-    elif any(grocery in item_name for grocery in [
-        'rice', 'sugar', 'flour', 'oil', 'bread', 'pasta', 'maize',
-        'meal', 'beans', 'salt', 'cereal', 'mealie'
-    ]):
-        return ProductCategory.GROCERIES
-    
-    # Default category
-    return ProductCategory.OTHER
+    # If no category matches, return ALL
+    return ProductCategory.ALL
 
 class ItemResponse(BaseModel):
     item_name: str
