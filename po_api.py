@@ -467,95 +467,6 @@ async def generate_purchase_order():
         logger.error(f"Error generating purchase order: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/create-purchase-order", response_model=PurchaseOrderResponse)
-async def create_purchase_order(request: PurchaseOrderRequest):
-    try:
-        # Load DataFrame and create reference sets
-        df = pd.read_excel(PO_DATA_FILE, sheet_name='Orders')
-        
-        # Validate vendor
-        vendor_match = df[
-            (df['VendorID'] == request.vendor_id) & 
-            (df['VendorName'] == request.vendor_name)
-        ].drop_duplicates()
-        
-        if vendor_match.empty:
-            vendor_list = df[['VendorID', 'VendorName']].drop_duplicates().apply(
-                lambda x: f"- {x['VendorName']} ({x['VendorID']})", axis=1
-            ).tolist()
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid vendor information. Available vendors:\n\n" + 
-                       "\n".join(vendor_list)
-            )
-            
-        valid_vendor = vendor_match.iloc[0]
-        
-        # Get random customer from dataset
-        valid_customer = get_random_customer(df)
-        
-        # Get vendor-specific bill number
-        bill_number = get_vendor_specific_bill_number(valid_vendor['VendorID'], df)
-        print(f"Using vendor bill number: {bill_number}")
-        
-        # Process items - ignore requested items and use random ones from dataset
-        processed_items = []
-        total_amount = 0
-        
-        # Randomly select 1-3 items from vendor's available items
-        num_items = np.random.randint(1, 4)
-        
-        for _ in range(num_items):
-            try:
-                # Get random item for this vendor
-                item_details = get_random_vendor_item(valid_vendor['VendorID'], df)
-                
-                processed_item = {
-                    'BillNumber': bill_number,
-                    'BillDate': datetime.now().strftime('%Y-%m-%d'),
-                    'DueDate': calculate_due_date(datetime.now()).strftime('%Y-%m-%d'),
-                    'VendorID': valid_vendor['VendorID'],
-                    'VendorName': valid_vendor['VendorName'],
-                    'CustomerID': valid_customer['CustomerID'],
-                    'CustomerName': valid_customer['CustomerName'],
-                    'ItemName': item_details['ItemName'],
-                    'Quantity': item_details['Quantity'],
-                    'Rate': item_details['Rate'],
-                    'ItemTotal': item_details['ItemTotal'],
-                    'Source': 'Client',
-                    'PaymentTerms': '14',
-                    'CurrencySymbol': 'ZMW'
-                }
-                
-                processed_items.append(processed_item)
-                total_amount += item_details['ItemTotal']
-                
-            except Exception as e:
-                print(f"Error processing item: {str(e)}")
-                continue
-
-        if not processed_items:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No valid items found for vendor {valid_vendor['VendorName']}"
-            )
-
-        return PurchaseOrderResponse(
-            po_number=bill_number,
-            created_date=processed_items[0]['BillDate'],
-            total_amount=total_amount,
-            items=processed_items,
-            status="created"
-        )
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing purchase order: {str(e)}"
-        )
-
 @app.get("/api/v1/check-stock-levels")
 async def check_stock_levels():
     """Check stock levels and get reorder recommendations"""
@@ -737,21 +648,130 @@ async def get_vendors():
         )
 
 @app.get("/api/v1/items")
-async def get_items():
-    """Get list of items"""
+async def get_items(category: Optional[ProductCategory] = Query(
+    default=ProductCategory.ALL,
+    description="Filter items by category"
+)):
+    """Get items with optional category filter"""
     try:
-        df = load_data()
-        # Only get unique items with their names
-        items = df[['ItemName']].drop_duplicates().to_dict('records')
-        return {
-            "status": "success",
-            "count": len(items),
-            "items": items
-        }
+        # Get items from data manager
+        items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
+        
+        if items_df.empty:
+            return {
+                "status": "warning",
+                "message": "No items found in database",
+                "data": []
+            }
+        
+        # Process all items
+        all_items = []
+        for _, row in items_df.iterrows():
+            try:
+                rate = float(str(row['Rate']).replace(',', ''))
+            except (ValueError, TypeError):
+                rate = 0.0
+                
+            item_category = categorize_item(row['ItemName'])
+            
+            # Skip if specific category requested and doesn't match
+            if category != ProductCategory.ALL and item_category != category:
+                continue
+                
+            all_items.append({
+                "item_name": row['ItemName'],
+                "category": item_category,
+                "rate": rate,
+                "vendor_name": row['VendorName'],
+                "vendor_id": row['VendorID']
+            })
+        
+        # Sort items by category and name
+        all_items.sort(key=lambda x: (x['category'], x['item_name']))
+        
+        if category != ProductCategory.ALL:
+            # Single category response
+            if not all_items:
+                return {
+                    "status": "warning",
+                    "message": f"No items found for category: {category}",
+                    "data": {
+                        "category": category,
+                        "items": [],
+                        "statistics": {
+                            "total_items": 0,
+                            "average_price": 0,
+                            "price_range": {"min": 0, "max": 0}
+                        }
+                    }
+                }
+            
+            total_value = sum(item['rate'] for item in all_items)
+            avg_price = total_value / len(all_items)
+            
+            return {
+                "status": "success",
+                "data": {
+                    "category": category,
+                    "items": all_items,
+                    "statistics": {
+                        "total_items": len(all_items),
+                        "average_price": round(avg_price, 2),
+                        "price_range": {
+                            "min": round(min(item['rate'] for item in all_items), 2),
+                            "max": round(max(item['rate'] for item in all_items), 2)
+                        }
+                    }
+                }
+            }
+        else:
+            # Group items by category
+            categories = {}
+            for item in all_items:
+                cat = item['category']
+                if cat not in categories:
+                    categories[cat] = []
+                categories[cat].append(item)
+            
+            # Calculate statistics for each category
+            category_stats = []
+            for cat, items in categories.items():
+                total_value = sum(item['rate'] for item in items)
+                avg_price = total_value / len(items)
+                
+                category_stats.append({
+                    "category": cat,
+                    "items": items,
+                    "statistics": {
+                        "total_items": len(items),
+                        "average_price": round(avg_price, 2),
+                        "price_range": {
+                            "min": round(min(item['rate'] for item in items), 2),
+                            "max": round(max(item['rate'] for item in items), 2)
+                        }
+                    }
+                })
+            
+            return {
+                "status": "success",
+                "data": {
+                    "categories": category_stats,
+                    "summary": {
+                        "total_categories": len(category_stats),
+                        "total_products": len(all_items),
+                        "categories_distribution": {
+                            cat["category"]: cat["statistics"]["total_items"] 
+                            for cat in category_stats
+                        }
+                    }
+                }
+            }
+        
     except Exception as e:
+        logger.error(f"Error fetching items: {str(e)}")
         raise HTTPException(
-            status_code=500, 
-            detail=str(e)
+            status_code=500,
+            detail=f"Error fetching items: {str(e)}"
         )
 
 @app.get("/api/v1/items/{vendor_name}")
@@ -973,6 +993,7 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 class ProductCategory(str, Enum):
+    ALL = "All Categories"
     MEAT = "Meat & Poultry"
     SEAFOOD = "Fish & Seafood"
     DAIRY = "Dairy & Eggs"
