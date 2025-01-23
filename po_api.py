@@ -76,7 +76,7 @@ except Exception as e:
 BASE_PATH = os.getenv('PO_DATA_PATH', os.path.dirname(os.path.realpath(__file__)))
 PO_DATA_FILE = os.path.join(BASE_PATH, os.getenv('PO_DATA_FILE', 'PO Data_formatted.xlsx'))
 
-# Define product categories
+# Define product categories first
 class ProductCategory(str, Enum):
     ALL = "All Categories"
     MEAT = "Meat & Poultry"
@@ -658,10 +658,12 @@ async def get_vendors():
         )
 
 @app.get("/api/v1/items")
-async def get_items(category: Optional[ProductCategory] = Query(
-    default=ProductCategory.ALL,
-    description="Filter items by category"
-)):
+async def get_items(
+    category: ProductCategory = Query(
+        default=ProductCategory.ALL,
+        description="Filter items by category"
+    )
+):
     """Get items with optional category filter"""
     try:
         # Get items from data manager
