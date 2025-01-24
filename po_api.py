@@ -404,33 +404,6 @@ async def generate_purchase_order():
         # Get random vendor
         vendor = data_manager.df[['VendorID', 'VendorName']].drop_duplicates().sample(n=1).iloc[0]
         
-        # Get vendor's existing bill numbers to determine pattern
-        vendor_bills = data_manager.df[
-            data_manager.df['VendorID'] == vendor['VendorID']
-        ]['BillNumber'].unique()
-        
-        # Generate new bill number based on vendor's pattern
-        if len(vendor_bills) > 0:
-            # Extract numeric parts from existing bill numbers
-            numeric_parts = []
-            for bill in vendor_bills:
-                try:
-                    num = int(''.join(filter(str.isdigit, bill)))
-                    numeric_parts.append(num)
-                except ValueError:
-                    continue
-            
-            if numeric_parts:
-                # Generate new number higher than existing ones
-                new_num = max(numeric_parts) + np.random.randint(1, 10)
-                # Get prefix from existing bills (non-numeric part)
-                prefix = ''.join(filter(str.isalpha, vendor_bills[0]))
-                po_number = f"{prefix}{new_num}" if prefix else str(new_num)
-            else:
-                po_number = f"{vendor['VendorID']}-{np.random.randint(1000, 9999)}"
-        else:
-            po_number = f"{vendor['VendorID']}-{np.random.randint(1000, 9999)}"
-        
         # Get items for this vendor
         vendor_items = data_manager.df[
             data_manager.df['VendorID'] == vendor['VendorID']
@@ -440,9 +413,10 @@ async def generate_purchase_order():
         num_items = np.random.randint(1, 4)
         selected_items = vendor_items.sample(n=min(num_items, len(vendor_items)))
         
-        # Generate items with random quantities
+        # Generate random quantities between 1 and 20
         items = []
         total_amount = 0
+        po_number = str(np.random.randint(1000, 9999))
         today = datetime.now().strftime("%Y-%m-%d")
         due_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
         
@@ -656,8 +630,13 @@ async def get_vendors():
         )
 
 @app.get("/api/v1/items")
-async def get_items(search: Optional[str] = None):
-    """Get all items grouped by category with optional search"""
+async def get_items(
+    category: ProductCategory = Query(
+        default=ProductCategory.ALL,
+        description="Filter items by category"
+    )
+):
+    """Get items with optional category filter"""
     try:
         # Get items from data manager
         items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
@@ -672,10 +651,6 @@ async def get_items(search: Optional[str] = None):
         # Process all items
         all_items = []
         for _, row in items_df.iterrows():
-            # Apply search filter if provided
-            if search and search.lower() not in row['ItemName'].lower():
-                continue
-                
             try:
                 rate = float(str(row['Rate']).replace(',', ''))
             except (ValueError, TypeError):
@@ -683,6 +658,10 @@ async def get_items(search: Optional[str] = None):
                 
             item_category = categorize_item(row['ItemName'])
             
+            # Skip if specific category requested and doesn't match
+            if category != ProductCategory.ALL and item_category != category:
+                continue
+                
             all_items.append({
                 "item_name": row['ItemName'],
                 "category": item_category,
@@ -691,64 +670,86 @@ async def get_items(search: Optional[str] = None):
                 "vendor_id": row['VendorID']
             })
         
-        if not all_items and search:
-            return {
-                "status": "warning",
-                "message": f"No items found matching search term: {search}",
-                "data": {
-                    "categories": [],
-                    "summary": {
-                        "total_categories": 0,
-                        "total_products": 0,
-                        "categories_distribution": {}
-                    }
-                }
-            }
-        
         # Sort items by category and name
         all_items.sort(key=lambda x: (x['category'], x['item_name']))
         
-        # Group items by category
-        categories = {}
-        for item in all_items:
-            cat = item['category']
-            if cat not in categories:
-                categories[cat] = []
-            categories[cat].append(item)
-        
-        # Calculate statistics for each category
-        category_stats = []
-        for cat, items in categories.items():
-            total_value = sum(item['rate'] for item in items)
-            avg_price = total_value / len(items)
-            
-            category_stats.append({
-                "category": cat,
-                "items": items,
-                "statistics": {
-                    "total_items": len(items),
-                    "average_price": round(avg_price, 2),
-                    "price_range": {
-                        "min": round(min(item['rate'] for item in items), 2),
-                        "max": round(max(item['rate'] for item in items), 2)
+        if category != ProductCategory.ALL:
+            # Single category response
+            if not all_items:
+                return {
+                    "status": "warning",
+                    "message": f"No items found for category: {category}",
+                    "data": {
+                        "category": category,
+                        "items": [],
+                        "statistics": {
+                            "total_items": 0,
+                            "average_price": 0,
+                            "price_range": {"min": 0, "max": 0}
+                        }
                     }
                 }
-            })
-        
-        return {
-            "status": "success",
-            "data": {
-                "categories": category_stats,
-                "summary": {
-                    "total_categories": len(category_stats),
-                    "total_products": len(all_items),
-                    "categories_distribution": {
-                        cat["category"]: cat["statistics"]["total_items"] 
-                        for cat in category_stats
+            
+            total_value = sum(item['rate'] for item in all_items)
+            avg_price = total_value / len(all_items)
+            
+            return {
+                "status": "success",
+                "data": {
+                    "category": category,
+                    "items": all_items,
+                    "statistics": {
+                        "total_items": len(all_items),
+                        "average_price": round(avg_price, 2),
+                        "price_range": {
+                            "min": round(min(item['rate'] for item in all_items), 2),
+                            "max": round(max(item['rate'] for item in all_items), 2)
+                        }
                     }
                 }
             }
-        }
+        else:
+            # Group items by category
+            categories = {}
+            for item in all_items:
+                cat = item['category']
+                if cat not in categories:
+                    categories[cat] = []
+                categories[cat].append(item)
+            
+            # Calculate statistics for each category
+            category_stats = []
+            for cat, items in categories.items():
+                total_value = sum(item['rate'] for item in items)
+                avg_price = total_value / len(items)
+                
+                category_stats.append({
+                    "category": cat,
+                    "items": items,
+                    "statistics": {
+                        "total_items": len(items),
+                        "average_price": round(avg_price, 2),
+                        "price_range": {
+                            "min": round(min(item['rate'] for item in items), 2),
+                            "max": round(max(item['rate'] for item in items), 2)
+                        }
+                    }
+                })
+            
+            return {
+                "status": "success",
+                "data": {
+                    "categories": category_stats,
+                    "summary": {
+                        "total_categories": len(category_stats),
+                        "total_products": len(all_items),
+                        "categories_distribution": {
+                            cat["category"]: cat["statistics"]["total_items"] 
+                            for cat in category_stats
+                        }
+                    }
+                }
+            }
         
     except Exception as e:
         logger.error(f"Error fetching items: {str(e)}")
@@ -850,7 +851,7 @@ def categorize_item(item_name: str) -> str:
     if any(produce in item_name for produce in [
         'apple', 'banana', 'orange', 'tomato', 'potato', 'onion',
         'cabbage', 'carrot', 'fruit', 'veg', 'vegetables',
-        'lettuce', 'cucumber', 'pepper', 'garlic', 'butternut'
+        'lettuce', 'cucumber', 'pepper', 'garlic'
     ]):
         return ProductCategory.PRODUCE
     
