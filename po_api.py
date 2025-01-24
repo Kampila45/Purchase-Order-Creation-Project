@@ -84,47 +84,87 @@ class ProductCategory(str, Enum):
     PRODUCE = "Fruits & Vegetables"
 
 # ML Model class
-class InventoryPredictor:
+class POPredictor:
     def __init__(self):
         self.model = RandomForestRegressor(n_estimators=100, random_state=42)
-        self.label_encoders = {}
-        self.is_trained = False
+        self.le_vendor = LabelEncoder()
+        self.le_item = LabelEncoder()
+        self.trained = False
+        
+    def train(self, df: pd.DataFrame):
+        """Train the model on historical PO data"""
+        try:
+            # Prepare features
+            df['DayOfWeek'] = pd.to_datetime(df['BillDate']).dt.dayofweek
+            df['Month'] = pd.to_datetime(df['BillDate']).dt.month
+            
+            # Encode categorical variables
+            df['VendorID_encoded'] = self.le_vendor.fit_transform(df['VendorID'])
+            df['ItemName_encoded'] = self.le_item.fit_transform(df['ItemName'])
+            
+            # Features for training
+            X = df[['VendorID_encoded', 'ItemName_encoded', 'DayOfWeek', 'Month']]
+            y = df['Quantity']
+            
+            # Train model
+            self.model.fit(X, y)
+            self.trained = True
+            print("ML model trained successfully")
+            
+        except Exception as e:
+            print(f"Error training model: {str(e)}")
+            raise
 
-    def prepare_data(self, df):
-        # Prepare features for ML model
-        features_df = df[['SKU', 'CustomerName', 'VendorName', 'Quantity']].copy()
-        
-        # Encode categorical variables
-        for column in ['SKU', 'CustomerName', 'VendorName']:
-            if column not in self.label_encoders:
-                self.label_encoders[column] = LabelEncoder()
-            features_df[column] = self.label_encoders[column].fit_transform(features_df[column])
-        
-        return features_df
+    async def check_and_generate_pos(self):
+        """Check inventory and automatically generate POs for low stock"""
+        try:
+            df = load_data()
+            if df.empty:
+                raise ValueError("No data found in the Excel file")
+            
+            # Get current inventory levels
+            inventory = df.groupby(['VendorID', 'VendorName', 'ItemName'])['Quantity'].sum().reset_index()
+            
+            pos_generated = []
+            
+            for _, item in inventory.iterrows():
+                current_quantity = float(item['Quantity'])
+                
+                # Check if stock is low (threshold = 5)
+                if current_quantity <= 5:
+                    try:
+                        # Generate PO for this item
+                        po_items = [{
+                            "item_name": item['ItemName'],
+                            "quantity": 10  # Order 10 units when low
+                        }]
+                        
+                        # Generate PO using existing endpoint
+                        po = await generate_purchase_order(
+                            vendor_id=item['VendorID'],
+                            items=po_items
+                        )
+                        
+                        pos_generated.append({
+                            "vendor_name": item['VendorName'],
+                            "item_name": item['ItemName'],
+                            "current_stock": current_quantity,
+                            "ordered_quantity": 10,
+                            "po_number": po.po_number
+                        })
+                        
+                    except Exception as e:
+                        print(f"Error generating PO for {item['ItemName']}: {str(e)}")
+                        continue
+            
+            return pos_generated
+            
+        except Exception as e:
+            print(f"Error in automatic PO generation: {str(e)}")
+            raise
 
-    def train(self, df):
-        features_df = self.prepare_data(df)
-        X = features_df[['SKU', 'CustomerName', 'VendorName']]
-        y = features_df['Quantity']
-        
-        self.model.fit(X, y)
-        self.is_trained = True
-
-    def predict(self, sku, customer_name, vendor_name):
-        if not self.is_trained:
-            raise ValueError("Model not trained yet")
-        
-        # Encode input values
-        sku_encoded = self.label_encoders['SKU'].transform([sku])[0]
-        customer_encoded = self.label_encoders['CustomerName'].transform([customer_name])[0]
-        vendor_encoded = self.label_encoders['VendorName'].transform([vendor_name])[0]
-        
-        # Make prediction
-        prediction = self.model.predict([[sku_encoded, customer_encoded, vendor_encoded]])[0]
-        return max(0, round(prediction, 2))  # Ensure non-negative quantity
-
-# Initialize ML model
-predictor = InventoryPredictor()
+# Create global instance
+predictor = POPredictor()
 
 # Data models
 class ItemPrediction(BaseModel):
@@ -310,7 +350,6 @@ async def startup_event():
     try:
         df = load_data()
         predictor.train(df)
-        print("ML model trained successfully")
     except Exception as e:
         print(f"Error training ML model: {str(e)}")
 
@@ -635,8 +674,8 @@ async def get_items(
                 
             item_category = categorize_item(row['ItemName'])
             
-            # Skip if specific category requested and doesn't match
-            if category != ProductCategory.MEAT and item_category != category:
+            # Skip if category doesn't match (and not requesting all categories)
+            if category != item_category:
                 continue
                 
             all_items.append({
@@ -647,86 +686,24 @@ async def get_items(
                 "vendor_id": row['VendorID']
             })
         
-        # Sort items by category and name
-        all_items.sort(key=lambda x: (x['category'], x['item_name']))
+        # Sort items by name
+        all_items.sort(key=lambda x: x['item_name'])
         
-        if category != ProductCategory.MEAT:
-            # Single category response
-            if not all_items:
-                return {
-                    "status": "warning",
-                    "message": f"No items found for category: {category}",
-                    "data": {
-                        "category": category,
-                        "items": [],
-                        "statistics": {
-                            "total_items": 0,
-                            "average_price": 0,
-                            "price_range": {"min": 0, "max": 0}
-                        }
-                    }
-                }
-            
-            total_value = sum(item['rate'] for item in all_items)
-            avg_price = total_value / len(all_items)
-            
+        if not all_items:
             return {
-                "status": "success",
-                "data": {
-                    "category": category,
-                    "items": all_items,
-                    "statistics": {
-                        "total_items": len(all_items),
-                        "average_price": round(avg_price, 2),
-                        "price_range": {
-                            "min": round(min(item['rate'] for item in all_items), 2),
-                            "max": round(max(item['rate'] for item in all_items), 2)
-                        }
-                    }
-                }
+                "status": "warning",
+                "message": f"No items found for category: {category}",
+                "data": []
             }
-        else:
-            # Group items by category
-            categories = {}
-            for item in all_items:
-                cat = item['category']
-                if cat not in categories:
-                    categories[cat] = []
-                categories[cat].append(item)
-            
-            # Calculate statistics for each category
-            category_stats = []
-            for cat, items in categories.items():
-                total_value = sum(item['rate'] for item in items)
-                avg_price = total_value / len(items)
-                
-                category_stats.append({
-                    "category": cat,
-                    "items": items,
-                    "statistics": {
-                        "total_items": len(items),
-                        "average_price": round(avg_price, 2),
-                        "price_range": {
-                            "min": round(min(item['rate'] for item in items), 2),
-                            "max": round(max(item['rate'] for item in items), 2)
-                        }
-                    }
-                })
-            
-            return {
-                "status": "success",
-                "data": {
-                    "categories": category_stats,
-                    "summary": {
-                        "total_categories": len(category_stats),
-                        "total_products": len(all_items),
-                        "categories_distribution": {
-                            cat["category"]: cat["statistics"]["total_items"] 
-                            for cat in category_stats
-                        }
-                    }
-                }
+        
+        return {
+            "status": "success",
+            "data": {
+                "category": category,
+                "items": all_items,
+                "total_items": len(all_items)
             }
+        }
         
     except Exception as e:
         logger.error(f"Error fetching items: {str(e)}")
@@ -818,6 +795,25 @@ class ItemResponse(BaseModel):
     rate: float
     vendor_name: str
     vendor_id: str
+
+@app.get("/api/v1/auto-generate-pos")
+async def auto_generate_purchase_orders():
+    """Endpoint to trigger automatic PO generation for low stock items"""
+    try:
+        pos_generated = await predictor.check_and_generate_pos()
+        
+        return {
+            "status": "success",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pos_generated": pos_generated,
+            "total_pos": len(pos_generated)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating automatic POs: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
