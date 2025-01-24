@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Union
 import pandas as pd
 import numpy as np
 import os
@@ -398,44 +398,61 @@ def get_random_vendor_item(vendor_id: str, df: pd.DataFrame) -> dict:
         raise
 
 @app.post("/generate-po", response_model=PurchaseOrder)
-async def generate_purchase_order():
+async def generate_purchase_order(
+    vendor_id: str,
+    items: List[Dict[str, Union[str, int, float]]]  # List of items with quantities
+):
     try:
-        # Get random vendor
-        vendor = data_manager.df[['VendorID', 'VendorName']].drop_duplicates().sample(n=1).iloc[0]
+        # Get vendor details from data manager
+        vendor_data = data_manager.df[
+            data_manager.df['VendorID'] == vendor_id
+        ][['VendorID', 'VendorName']].drop_duplicates()
         
-        # Get items for this vendor
-        vendor_items = data_manager.df[
-            data_manager.df['VendorID'] == vendor['VendorID']
-        ][['ItemName', 'Rate']].drop_duplicates()
+        if vendor_data.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Vendor with ID {vendor_id} not found"
+            )
+            
+        vendor = vendor_data.iloc[0]
         
-        # Select 1-3 random items
-        num_items = np.random.randint(1, 4)
-        selected_items = vendor_items.sample(n=min(num_items, len(vendor_items)))
-        
-        # Generate random quantities between 1 and 20
-        items = []
+        # Process items
+        po_items = []
         total_amount = 0
         po_number = str(np.random.randint(1000, 9999))
         today = datetime.now().strftime("%Y-%m-%d")
         due_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
         
-        for _, item in selected_items.iterrows():
-            quantity = np.random.randint(1, 21)  # Random quantity 1-20
-            rate = float(item['Rate'])
+        for item in items:
+            # Get item details from vendor's items
+            item_data = data_manager.df[
+                (data_manager.df['VendorID'] == vendor_id) & 
+                (data_manager.df['ItemName'] == item['item_name'])
+            ].drop_duplicates()
+            
+            if item_data.empty:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Item {item['item_name']} not found for vendor {vendor['VendorName']}"
+                )
+            
+            # Calculate totals
+            quantity = float(item['quantity'])
+            rate = float(str(item_data.iloc[0]['Rate']).replace(',', ''))
             item_total = quantity * rate
             total_amount += item_total
             
-            # Add kg to all quantities
+            # Add kg to quantity
             quantity_with_unit = f"{quantity} kg"
             
-            items.append(OrderItem(
+            po_items.append(OrderItem(
                 BillNumber=po_number,
                 BillDate=today,
                 DueDate=due_date,
                 VendorID=vendor['VendorID'],
                 VendorName=vendor['VendorName'],
-                ItemName=item['ItemName'],
-                Quantity=quantity_with_unit,  # Now includes kg for all items
+                ItemName=item['item_name'],
+                Quantity=quantity_with_unit,
                 Rate=rate,
                 ItemTotal=item_total
             ))
@@ -444,9 +461,11 @@ async def generate_purchase_order():
             po_number=po_number,
             created_date=today,
             total_amount=total_amount,
-            items=items
+            items=po_items
         )
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"Error generating purchase order: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
