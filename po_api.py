@@ -78,7 +78,6 @@ PO_DATA_FILE = os.path.join(BASE_PATH, os.getenv('PO_DATA_FILE', 'PO Data_format
 
 # Define product categories first
 class ProductCategory(str, Enum):
-    ALL = "All Categories"
     MEAT = "Meat & Poultry"
     SEAFOOD = "Fish & Seafood"
     DAIRY = "Dairy & Eggs"
@@ -632,7 +631,7 @@ async def get_vendors():
 @app.get("/api/v1/items")
 async def get_items(
     category: ProductCategory = Query(
-        default=ProductCategory.ALL,
+        default=ProductCategory.MEAT,
         description="Filter items by category"
     )
 ):
@@ -659,7 +658,7 @@ async def get_items(
             item_category = categorize_item(row['ItemName'])
             
             # Skip if specific category requested and doesn't match
-            if category != ProductCategory.ALL and item_category != category:
+            if category != ProductCategory.MEAT and item_category != category:
                 continue
                 
             all_items.append({
@@ -673,7 +672,7 @@ async def get_items(
         # Sort items by category and name
         all_items.sort(key=lambda x: (x['category'], x['item_name']))
         
-        if category != ProductCategory.ALL:
+        if category != ProductCategory.MEAT:
             # Single category response
             if not all_items:
                 return {
@@ -876,8 +875,8 @@ def categorize_item(item_name: str) -> str:
     ]):
         return ProductCategory.DAIRY
     
-    # If no category matches, return ALL
-    return ProductCategory.ALL
+    # Return the first category as default if no match is found
+    return ProductCategory.MEAT
 
 class ItemResponse(BaseModel):
     item_name: str
