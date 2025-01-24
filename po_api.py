@@ -425,6 +425,13 @@ async def generate_purchase_order():
             item_total = quantity * rate
             total_amount += item_total
             
+            # Add unit based on item name
+            item_name = item['ItemName'].lower()
+            if 'potato' in item_name:
+                quantity_with_unit = f"{quantity} kg"
+            else:
+                quantity_with_unit = f"{quantity} units"
+            
             items.append(OrderItem(
                 BillNumber=po_number,
                 BillDate=today,
@@ -432,7 +439,7 @@ async def generate_purchase_order():
                 VendorID=vendor['VendorID'],
                 VendorName=vendor['VendorName'],
                 ItemName=item['ItemName'],
-                Quantity=quantity,
+                Quantity=quantity_with_unit,  # Now includes units
                 Rate=rate,
                 ItemTotal=item_total
             ))
@@ -462,24 +469,19 @@ async def check_stock_levels():
         total_items = 0
         critical_count = 0
         low_stock_count = 0
-        total_inventory_value = 0
         
         for vendor in vendors:
             # Filter data for this vendor
             vendor_data = df[df['VendorName'] == vendor]
             vendor_items = vendor_data.groupby('ItemName').agg({
                 'Quantity': 'sum',
-                'Rate': 'last',
                 'BillDate': 'last'
             }).reset_index()
             
             vendor_items_list = []
-            vendor_total_value = 0
-            vendor_reorder_value = 0
             
             for _, item in vendor_items.iterrows():
                 current_quantity = float(item['Quantity'])
-                unit_rate = round(float(item['Rate']), 2)
                 
                 # Determine stock status and recommended order
                 if current_quantity <= 5:
@@ -501,14 +503,6 @@ async def check_stock_levels():
                     status = "SUFFICIENT STOCK"
                     recommendation = "Stock levels are healthy"
                 
-                # Calculate values
-                current_value = round(current_quantity * unit_rate, 2)
-                reorder_value = round(recommended_order * unit_rate, 2)
-                
-                vendor_total_value += current_value
-                vendor_reorder_value += reorder_value
-                total_inventory_value += current_value
-                
                 # Format the date properly
                 try:
                     last_updated = pd.to_datetime(item['BillDate']).strftime('%Y-%m-%d') if pd.notnull(item['BillDate']) else None
@@ -521,12 +515,6 @@ async def check_stock_levels():
                         'current': round(current_quantity, 2),
                         'recommended_order': round(recommended_order, 2),
                         'total_after_reorder': round(current_quantity + recommended_order, 2)
-                    },
-                    'pricing': {
-                        'unit_rate': unit_rate,
-                        'current_value': current_value,
-                        'reorder_cost': reorder_value,
-                        'currency': 'ZMW'
                     },
                     'status': status,
                     'recommendation': recommendation,
@@ -542,8 +530,6 @@ async def check_stock_levels():
             inventory_by_vendor[vendor] = {
                 'items': vendor_items_list,
                 'vendor_total': {
-                    'current_stock_value': round(vendor_total_value, 2),
-                    'recommended_reorder_value': round(vendor_reorder_value, 2),
                     'total_items': len(vendor_items_list),
                     'critical_items': len([x for x in vendor_items_list if x['status'] == "CRITICAL LOW STOCK"]),
                     'low_stock_items': len([x for x in vendor_items_list if x['status'] == "LOW STOCK"])
@@ -558,9 +544,7 @@ async def check_stock_levels():
                 'total_items': total_items,
                 'critical_items': critical_count,
                 'low_stock_items': low_stock_count,
-                'total_vendors': len(vendors),
-                'total_inventory_value': round(total_inventory_value, 2),
-                'currency': 'ZMW'
+                'total_vendors': len(vendors)
             }
         }
         
