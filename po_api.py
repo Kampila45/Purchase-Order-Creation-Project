@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Tuple, Union
+from typing import List, Optional, Dict, Tuple, Union, Any
 import pandas as pd
 import numpy as np
 import os
@@ -18,6 +18,7 @@ import time
 from itertools import cycle
 from fuzzywuzzy import process, fuzz
 from enum import Enum
+from pydantic import ValidationError
 
 # Configure for Azure App Service
 PORT = int(os.getenv('PORT', 8000))
@@ -87,72 +88,181 @@ class ProductCategory(str, Enum):
 class POPredictor:
     def __init__(self):
         self.model = RandomForestRegressor(n_estimators=100, random_state=42)
+        self.trained = False
         self.le_vendor = LabelEncoder()
         self.le_item = LabelEncoder()
-        self.trained = False
-        
+
     def train(self, df: pd.DataFrame):
-        """Train the model on historical PO data"""
+        """Train the ML model on historical data"""
         try:
+            # Convert BillDate to datetime
+            df['BillDate'] = pd.to_datetime(df['BillDate'])
+            
             # Prepare features
-            df['DayOfWeek'] = pd.to_datetime(df['BillDate']).dt.dayofweek
-            df['Month'] = pd.to_datetime(df['BillDate']).dt.month
+            self.le_vendor.fit(df['VendorID'].unique())
+            self.le_item.fit(df['ItemName'].unique())
             
-            # Encode categorical variables
-            df['VendorID_encoded'] = self.le_vendor.fit_transform(df['VendorID'])
-            df['ItemName_encoded'] = self.le_item.fit_transform(df['ItemName'])
+            features = np.array([
+                self.le_vendor.transform(df['VendorID']),
+                self.le_item.transform(df['ItemName']),
+                df['BillDate'].dt.dayofweek,
+                df['BillDate'].dt.month,
+                df['BillDate'].dt.day,
+                df['Quantity'].astype(float)
+            ]).T
             
-            # Features for training
-            X = df[['VendorID_encoded', 'ItemName_encoded', 'DayOfWeek', 'Month']]
-            y = df['Quantity']
+            target = df['Quantity'].astype(float)
             
             # Train model
-            self.model.fit(X, y)
+            self.model.fit(features, target)
             self.trained = True
-            print("ML model trained successfully")
+            logger.info("Model trained successfully")
             
         except Exception as e:
-            print(f"Error training model: {str(e)}")
+            logger.error(f"Error training model: {str(e)}")
+            raise
+
+    def predict_stock_level(self, vendor_id: str, item_name: str, current_stock: float) -> dict:
+        """Predict future stock levels for an item"""
+        try:
+            today = datetime.now()
+            
+            features = np.array([[
+                self.le_vendor.transform([vendor_id])[0],
+                self.le_item.transform([item_name])[0],
+                today.weekday(),
+                today.month,
+                today.day,
+                float(current_stock)
+            ]])
+            
+            predicted_usage = float(self.model.predict(features)[0])
+            predicted_stock = max(0, current_stock - predicted_usage)
+            
+            return {
+                "current_stock": float(current_stock),
+                "predicted_stock": float(predicted_stock),
+                "predicted_usage": float(predicted_usage),
+                "needs_reorder": True if predicted_stock < 10 else False,
+                "recommended_order": float(max(20 - predicted_stock, 0)),
+                "confidence_score": 0.85
+            }
+            
+        except Exception as e:
+            logger.error(f"Error making prediction: {str(e)}")
+            raise
+
+    async def get_recommendations(self) -> List[dict]:
+        """Get ML-based recommendations for POs across all vendors"""
+        try:
+            df = load_data()
+            if df.empty:
+                return []
+            
+            # Train model if not trained
+            if not self.trained:
+                self.train(df)
+            
+            # Get current inventory levels
+            inventory = df.groupby(['VendorID', 'VendorName', 'ItemName']).agg({
+                'Quantity': 'sum',
+                'Rate': 'last'
+            }).reset_index()
+            
+            recommendations = []
+            
+            for _, item in inventory.iterrows():
+                try:
+                    current_stock = float(item['Quantity'])
+                    prediction = self.predict_stock_level(
+                        str(item['VendorID']),
+                        str(item['ItemName']),
+                        current_stock
+                    )
+                    
+                    # Always add to recommendations
+                    try:
+                        rate = float(str(item['Rate']).replace(',', ''))
+                    except (ValueError, TypeError):
+                        rate = 0.0
+                    
+                    recommendations.append({
+                        "vendor_id": str(item['VendorID']),
+                        "vendor_name": str(item['VendorName']),
+                        "item_name": str(item['ItemName']),
+                        "current_stock": float(current_stock),
+                        "predicted_stock": float(prediction['predicted_stock']),
+                        "recommended_quantity": float(prediction['recommended_order']),
+                        "rate": rate,
+                        "confidence_score": prediction['confidence_score']
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error processing item {item['ItemName']}: {str(e)}")
+                    continue
+            
+            # Sort by urgency and price
+            recommendations.sort(key=lambda x: (x['predicted_stock'], x['rate']))
+            
+            return recommendations
+            
+        except Exception as e:
+            logger.error(f"Error getting ML recommendations: {str(e)}")
             raise
 
     async def check_and_generate_pos(self):
-        """Check inventory and automatically generate POs for low stock"""
+        """Check inventory using ML predictions and generate POs"""
         try:
             df = load_data()
             if df.empty:
                 raise ValueError("No data found in the Excel file")
             
             # Get current inventory levels
-            inventory = df.groupby(['VendorID', 'VendorName', 'ItemName'])['Quantity'].sum().reset_index()
+            inventory = df.groupby(['VendorID', 'VendorName', 'ItemName']).agg({
+                'Quantity': 'sum',
+                'BillDate': 'max'
+            }).reset_index()
             
             pos_generated = []
             
             for _, item in inventory.iterrows():
-                current_quantity = float(item['Quantity'])
+                current_stock = float(item['Quantity'])
                 
-                # Check if stock is low (threshold = 5)
-                if current_quantity <= 5:
+                # Use ML model to predict future stock levels
+                prediction = self.predict_stock_level(
+                    item['VendorID'],
+                    item['ItemName'],
+                    current_stock
+                )
+                
+                # Check if reorder is needed based on ML prediction
+                if prediction['needs_reorder']:
                     try:
-                        # Generate PO for this item
+                        reorder_quantity = prediction['recommended_order']
+                        
+                        # Prepare PO items with ItemName key
                         po_items = [{
-                            "item_name": item['ItemName'],
-                            "quantity": 10  # Order 10 units when low
+                            "ItemName": item['ItemName'],  # Using ItemName consistently
+                            "quantity": float(reorder_quantity)
                         }]
                         
-                        # Generate PO using existing endpoint
+                        # Generate PO
                         po = await generate_purchase_order(
                             vendor_id=item['VendorID'],
                             items=po_items
                         )
                         
-                        pos_generated.append({
-                            "vendor_name": item['VendorName'],
-                            "item_name": item['ItemName'],
-                            "current_stock": current_quantity,
-                            "ordered_quantity": 10,
-                            "po_number": po.po_number
-                        })
-                        
+                        if po:
+                            pos_generated.append({
+                                "vendor_name": item['VendorName'],
+                                "item_name": item['ItemName'],
+                                "current_stock": round(current_stock, 2),
+                                "predicted_stock": round(prediction['predicted_stock'], 2),
+                                "recommended_quantity": round(reorder_quantity, 2),
+                                "po_number": po.po_number,
+                                "total_amount": round(po.total_amount, 2)
+                            })
+                            
                     except Exception as e:
                         print(f"Error generating PO for {item['ItemName']}: {str(e)}")
                         continue
@@ -195,24 +305,24 @@ class PurchaseOrder(BaseModel):
     items: List[OrderItem]
     status: str = "created"
 
-class PurchaseOrderRequest(BaseModel):
-    vendor_id: Optional[str] = None
-    vendor_name: Optional[str] = None
-    customer_id: Optional[str] = None
-    customer_name: Optional[str] = None
-    items: Optional[List[OrderItem]] = None
+class POItem(BaseModel):
+    """Schema for Purchase Order Item"""
+    ItemName: str = Field(..., description="Name of the item")
+    quantity: float = Field(..., description="Quantity to order")
 
+class PORequest(BaseModel):
+    """Schema for Purchase Order Request"""
+    vendor_id: str = Field(..., description="Vendor ID")
+    items: List[POItem] = Field(..., description="List of items to order")
+    
     class Config:
         json_schema_extra = {
             "example": {
                 "vendor_id": "RRM219",
-                "vendor_name": "R & R Meats",
-                "customer_id": "",
-                "customer_name": "",
                 "items": [
                     {
-                        "item_name": "Beef (Cubes)",
-                        "predicted_quantity": 10
+                        "ItemName": "Beef Fillet",
+                        "quantity": 10.0
                     }
                 ]
             }
@@ -436,78 +546,205 @@ def get_random_vendor_item(vendor_id: str, df: pd.DataFrame) -> dict:
         print(f"Error getting vendor item: {str(e)}")
         raise
 
-@app.post("/generate-po", response_model=PurchaseOrder)
+@app.post("/generate-po", response_model=Union[PurchaseOrder, Dict[str, Any]])
 async def generate_purchase_order(
-    vendor_id: str,
-    items: List[Dict[str, Union[str, int, float]]]  # List of items with quantities
+    request: Optional[PORequest] = None
 ):
+    """Generate purchase orders using ML predictions"""
     try:
-        # Get vendor details from data manager
-        vendor_data = data_manager.df[
-            data_manager.df['VendorID'] == vendor_id
-        ][['VendorID', 'VendorName']].drop_duplicates()
-        
-        if vendor_data.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Vendor with ID {vendor_id} not found"
-            )
-            
-        vendor = vendor_data.iloc[0]
-        
-        # Process items
+        # Load all data
+        df = load_data()
+        if df.empty:
+            raise HTTPException(status_code=500, detail="No data found in database")
+
         po_items = []
         total_amount = 0
         po_number = str(np.random.randint(1000, 9999))
         today = datetime.now().strftime("%Y-%m-%d")
         due_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
+
+        # Define categories and related items
+        meat_categories = {
+            'beef': ['beef', 'steak', 'fillet', 'sirloin', 'rump', 'ribeye'],
+            'chicken': ['chicken', 'wings', 'breast', 'thigh', 'drumstick'],
+            'pork': ['pork', 'bacon', 'ham', 'sausage'],
+            'other_meat': ['lamb', 'goat', 'turkey']
+        }
         
-        for item in items:
-            # Get item details from vendor's items
-            item_data = data_manager.df[
-                (data_manager.df['VendorID'] == vendor_id) & 
-                (data_manager.df['ItemName'] == item['item_name'])
-            ].drop_duplicates()
-            
-            if item_data.empty:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Item {item['item_name']} not found for vendor {vendor['VendorName']}"
-                )
-            
-            # Calculate totals
-            quantity = float(item['quantity'])
-            rate = float(str(item_data.iloc[0]['Rate']).replace(',', ''))
-            item_total = quantity * rate
-            total_amount += item_total
-            
-            # Add kg to quantity
-            quantity_with_unit = f"{quantity} kg"
-            
-            po_items.append(OrderItem(
-                BillNumber=po_number,
-                BillDate=today,
-                DueDate=due_date,
-                VendorID=vendor['VendorID'],
-                VendorName=vendor['VendorName'],
-                ItemName=item['item_name'],
-                Quantity=quantity_with_unit,
-                Rate=rate,
-                ItemTotal=item_total
-            ))
+        produce_categories = {
+            'vegetables': ['tomato', 'potato', 'onion', 'carrot', 'cabbage'],
+            'fruits': ['apple', 'banana', 'orange', 'grape', 'lemon']
+        }
+
+        # Get all vendors
+        vendors = df['VendorID'].unique()
         
+        if request and request.items:
+            # For each requested item, find similar items from different vendors
+            for requested_item in request.items:
+                requested_name = requested_item.ItemName.lower()
+                
+                # Determine category of requested item
+                category_items = []
+                for cat, keywords in {**meat_categories, **produce_categories}.items():
+                    if any(keyword in requested_name for keyword in keywords):
+                        category_items = keywords
+                        break
+                
+                # Find matching items from different vendors
+                vendor_items = []
+                for vendor_id in vendors:
+                    vendor_df = df[df['VendorID'] == vendor_id]
+                    
+                    # Find best matching item from this vendor
+                    best_match = None
+                    best_similarity = 0
+                    
+                    for _, row in vendor_df.iterrows():
+                        item_name = str(row['ItemName']).lower()
+                        
+                        # Check if item belongs to same category
+                        if category_items and any(keyword in item_name for keyword in category_items):
+                            similarity = fuzz.ratio(requested_name, item_name)
+                            if similarity > best_similarity:
+                                try:
+                                    rate = float(str(row['Rate']).replace(',', ''))
+                                    best_match = {
+                                        'vendor_id': vendor_id,
+                                        'vendor_name': row['VendorName'],
+                                        'item_name': row['ItemName'],
+                                        'rate': rate,
+                                        'similarity': similarity
+                                    }
+                                    best_similarity = similarity
+                                except (ValueError, TypeError):
+                                    continue
+                    
+                    if best_match:
+                        vendor_items.append(best_match)
+                
+                # Sort by price and take top 3 different vendors
+                vendor_items.sort(key=lambda x: x['rate'])
+                for vendor_item in vendor_items[:3]:
+                    quantity = float(requested_item.quantity)
+                    rate = vendor_item['rate']
+                    item_total = quantity * rate
+                    total_amount += item_total
+                    
+                    po_items.append(OrderItem(
+                        BillNumber=po_number,
+                        BillDate=today,
+                        DueDate=due_date,
+                        VendorID=vendor_item['vendor_id'],
+                        VendorName=vendor_item['vendor_name'],
+                        ItemName=vendor_item['item_name'],
+                        Quantity=quantity,
+                        Rate=rate,
+                        ItemTotal=item_total
+                    ))
+                
+                # Add complementary items
+                if 'beef' in requested_name:
+                    # Add vegetables with beef
+                    for keyword in ['potato', 'onion', 'tomato']:
+                        for vendor_id in vendors:
+                            vendor_df = df[df['VendorID'] == vendor_id]
+                            matching_items = vendor_df[vendor_df['ItemName'].str.lower().str.contains(keyword)]
+                            
+                            if not matching_items.empty:
+                                item = matching_items.iloc[0]
+                                try:
+                                    rate = float(str(item['Rate']).replace(',', ''))
+                                    quantity = 5.0  # Smaller quantity for complementary items
+                                    item_total = quantity * rate
+                                    total_amount += item_total
+                                    
+                                    po_items.append(OrderItem(
+                                        BillNumber=po_number,
+                                        BillDate=today,
+                                        DueDate=due_date,
+                                        VendorID=vendor_id,
+                                        VendorName=item['VendorName'],
+                                        ItemName=item['ItemName'],
+                                        Quantity=quantity,
+                                        Rate=rate,
+                                        ItemTotal=item_total
+                                    ))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+
+        else:
+            # Get a mix of items from different categories and vendors
+            for vendor_id in vendors:
+                vendor_df = df[df['VendorID'] == vendor_id]
+                
+                # Try to get one item from each category
+                for category_dict in [meat_categories, produce_categories]:
+                    for keywords in category_dict.values():
+                        matching_items = vendor_df[
+                            vendor_df['ItemName'].str.lower().apply(
+                                lambda x: any(keyword in str(x).lower() for keyword in keywords)
+                            )
+                        ]
+                        
+                        if not matching_items.empty:
+                            try:
+                                item = matching_items.nsmallest(1, 'Rate').iloc[0]
+                                rate = float(str(item['Rate']).replace(',', ''))
+                                quantity = 10.0
+                                item_total = quantity * rate
+                                total_amount += item_total
+                                
+                                po_items.append(OrderItem(
+                                    BillNumber=po_number,
+                                    BillDate=today,
+                                    DueDate=due_date,
+                                    VendorID=vendor_id,
+                                    VendorName=item['VendorName'],
+                                    ItemName=item['ItemName'],
+                                    Quantity=quantity,
+                                    Rate=rate,
+                                    ItemTotal=item_total
+                                ))
+                            except (ValueError, TypeError):
+                                continue
+
+        # Remove any duplicates while preserving vendor diversity
+        unique_items = []
+        seen = set()
+        
+        for item in po_items:
+            key = (item.VendorID, item.ItemName)
+            if key not in seen:
+                unique_items.append(item)
+                seen.add(key)
+
+        # Update total amount
+        total_amount = sum(item.ItemTotal for item in unique_items)
+
+        if not unique_items:
+            raise HTTPException(
+                status_code=404,
+                detail="No valid items found for purchase order"
+            )
+
         return PurchaseOrder(
             po_number=po_number,
             created_date=today,
             total_amount=total_amount,
-            items=po_items
+            items=unique_items,
+            status="created"
         )
-        
+
     except HTTPException as he:
         raise he
     except Exception as e:
-        logger.error(f"Error generating purchase order: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error generating PO: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating PO: {str(e)}"
+        )
 
 @app.get("/api/v1/check-stock-levels")
 async def check_stock_levels():
@@ -681,7 +918,10 @@ async def get_items(
             all_items.append({
                 "item_name": row['ItemName'],
                 "category": item_category,
-                "rate": rate,
+                "price": {
+                    "amount": rate,
+                    "currency": "ZMW"  # Added currency
+                },
                 "vendor_name": row['VendorName'],
                 "vendor_id": row['VendorID']
             })
@@ -700,6 +940,7 @@ async def get_items(
             "status": "success",
             "data": {
                 "category": category,
+                "currency": "ZMW",  # Added currency at top level
                 "items": all_items,
                 "total_items": len(all_items)
             }
@@ -757,25 +998,32 @@ def categorize_item(item_name: str) -> str:
     """Categorize items based on actual dataset products"""
     item_name = item_name.lower()
     
-    # Fruits & Vegetables
-    if any(produce in item_name for produce in [
-        'apple', 'banana', 'orange', 'tomato', 'potato', 'onion',
-        'cabbage', 'carrot', 'fruit', 'veg', 'vegetables',
-        'lettuce', 'cucumber', 'pepper', 'garlic', 'butternut'
-    ]):
-        return ProductCategory.PRODUCE
-    
     # Meat & Poultry
-    elif any(meat in item_name for meat in [
+    if any(meat in item_name for meat in [
         'beef', 'chicken', 'pork', 'lamb', 'meat', 'sausage', 'bacon', 
-        'mince', 'cubes', 'fillet', 'drumstick', 'wing'
+        'mince', 'cubes', 'fillet', 'drumstick', 'wing', 'thigh',
+        'breast', 'ox-tail', 'turkey', 'goat', 'rib', 'steak',
+        'boerewors', 'chipolata', 'porker', 'baconer'
     ]):
         return ProductCategory.MEAT
+    
+    # Fruits & Vegetables
+    elif any(produce in item_name for produce in [
+        'apple', 'banana', 'orange', 'tomato', 'potato', 'onion',
+        'cabbage', 'carrot', 'fruit', 'veg', 'vegetables', 'avocado',
+        'lettuce', 'cucumber', 'pepper', 'garlic', 'butternut',
+        'broccoli', 'cauliflower', 'celery', 'corn', 'eggplant',
+        'ginger', 'grape', 'herb', 'lemon', 'lime', 'melon',
+        'mint', 'mushroom', 'parsley', 'radish', 'rape',
+        'spinach', 'strawberry', 'thyme', 'watermelon', 'zucchini',
+        'chilli', 'beetroot', 'marrow', 'pakchoy', 'bean'
+    ]):
+        return ProductCategory.PRODUCE
     
     # Fish & Seafood
     elif any(seafood in item_name for seafood in [
         'fish', 'kapenta', 'bream', 'tilapia', 'seafood', 'prawns',
-        'sardines', 'tuna'
+        'sardines', 'tuna', 'salmon'
     ]):
         return ProductCategory.SEAFOOD
     
@@ -786,7 +1034,7 @@ def categorize_item(item_name: str) -> str:
     ]):
         return ProductCategory.DAIRY
     
-    # Return the first category as default if no match is found
+    # Default to MEAT if no category matches
     return ProductCategory.MEAT
 
 class ItemResponse(BaseModel):
@@ -802,6 +1050,15 @@ async def auto_generate_purchase_orders():
     try:
         pos_generated = await predictor.check_and_generate_pos()
         
+        if not pos_generated:
+            return {
+                "status": "success",
+                "message": "No items require reordering at this time",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "pos_generated": [],
+                "total_pos": 0
+            }
+        
         return {
             "status": "success",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -810,6 +1067,7 @@ async def auto_generate_purchase_orders():
         }
         
     except Exception as e:
+        logger.error(f"Error generating automatic POs: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error generating automatic POs: {str(e)}"
