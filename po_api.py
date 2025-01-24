@@ -851,7 +851,7 @@ def categorize_item(item_name: str) -> str:
     if any(produce in item_name for produce in [
         'apple', 'banana', 'orange', 'tomato', 'potato', 'onion',
         'cabbage', 'carrot', 'fruit', 'veg', 'vegetables',
-        'lettuce', 'cucumber', 'pepper', 'garlic'
+        'lettuce', 'cucumber', 'pepper', 'garlic', 'butternut'
     ]):
         return ProductCategory.PRODUCE
     
