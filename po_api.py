@@ -656,13 +656,8 @@ async def get_vendors():
         )
 
 @app.get("/api/v1/items")
-async def get_items(
-    category: ProductCategory = Query(
-        default=ProductCategory.ALL,
-        description="Filter items by category"
-    )
-):
-    """Get items with optional category filter"""
+async def get_items():
+    """Get all items grouped by category"""
     try:
         # Get items from data manager
         items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
@@ -684,10 +679,6 @@ async def get_items(
                 
             item_category = categorize_item(row['ItemName'])
             
-            # Skip if specific category requested and doesn't match
-            if category != ProductCategory.ALL and item_category != category:
-                continue
-                
             all_items.append({
                 "item_name": row['ItemName'],
                 "category": item_category,
@@ -699,83 +690,47 @@ async def get_items(
         # Sort items by category and name
         all_items.sort(key=lambda x: (x['category'], x['item_name']))
         
-        if category != ProductCategory.ALL:
-            # Single category response
-            if not all_items:
-                return {
-                    "status": "warning",
-                    "message": f"No items found for category: {category}",
-                    "data": {
-                        "category": category,
-                        "items": [],
-                        "statistics": {
-                            "total_items": 0,
-                            "average_price": 0,
-                            "price_range": {"min": 0, "max": 0}
-                        }
+        # Group items by category
+        categories = {}
+        for item in all_items:
+            cat = item['category']
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(item)
+        
+        # Calculate statistics for each category
+        category_stats = []
+        for cat, items in categories.items():
+            total_value = sum(item['rate'] for item in items)
+            avg_price = total_value / len(items)
+            
+            category_stats.append({
+                "category": cat,
+                "items": items,
+                "statistics": {
+                    "total_items": len(items),
+                    "average_price": round(avg_price, 2),
+                    "price_range": {
+                        "min": round(min(item['rate'] for item in items), 2),
+                        "max": round(max(item['rate'] for item in items), 2)
                     }
                 }
-            
-            total_value = sum(item['rate'] for item in all_items)
-            avg_price = total_value / len(all_items)
-            
-            return {
-                "status": "success",
-                "data": {
-                    "category": category,
-                    "items": all_items,
-                    "statistics": {
-                        "total_items": len(all_items),
-                        "average_price": round(avg_price, 2),
-                        "price_range": {
-                            "min": round(min(item['rate'] for item in all_items), 2),
-                            "max": round(max(item['rate'] for item in all_items), 2)
-                        }
-                    }
-                }
-            }
-        else:
-            # Group items by category
-            categories = {}
-            for item in all_items:
-                cat = item['category']
-                if cat not in categories:
-                    categories[cat] = []
-                categories[cat].append(item)
-            
-            # Calculate statistics for each category
-            category_stats = []
-            for cat, items in categories.items():
-                total_value = sum(item['rate'] for item in items)
-                avg_price = total_value / len(items)
-                
-                category_stats.append({
-                    "category": cat,
-                    "items": items,
-                    "statistics": {
-                        "total_items": len(items),
-                        "average_price": round(avg_price, 2),
-                        "price_range": {
-                            "min": round(min(item['rate'] for item in items), 2),
-                            "max": round(max(item['rate'] for item in items), 2)
-                        }
-                    }
-                })
-            
-            return {
-                "status": "success",
-                "data": {
-                    "categories": category_stats,
-                    "summary": {
-                        "total_categories": len(category_stats),
-                        "total_products": len(all_items),
-                        "categories_distribution": {
-                            cat["category"]: cat["statistics"]["total_items"] 
-                            for cat in category_stats
-                        }
+            })
+        
+        return {
+            "status": "success",
+            "data": {
+                "categories": category_stats,
+                "summary": {
+                    "total_categories": len(category_stats),
+                    "total_products": len(all_items),
+                    "categories_distribution": {
+                        cat["category"]: cat["statistics"]["total_items"] 
+                        for cat in category_stats
                     }
                 }
             }
+        }
         
     except Exception as e:
         logger.error(f"Error fetching items: {str(e)}")
@@ -877,7 +832,7 @@ def categorize_item(item_name: str) -> str:
     if any(produce in item_name for produce in [
         'apple', 'banana', 'orange', 'tomato', 'potato', 'onion',
         'cabbage', 'carrot', 'fruit', 'veg', 'vegetables',
-        'lettuce', 'cucumber', 'pepper', 'garlic'
+        'lettuce', 'cucumber', 'pepper', 'garlic', 'butternut'
     ]):
         return ProductCategory.PRODUCE
     
