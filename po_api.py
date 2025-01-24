@@ -656,8 +656,8 @@ async def get_vendors():
         )
 
 @app.get("/api/v1/items")
-async def get_items():
-    """Get all items grouped by category"""
+async def get_items(search: Optional[str] = None):
+    """Get all items grouped by category with optional search"""
     try:
         # Get items from data manager
         items_df = data_manager.df[['ItemName', 'Rate', 'VendorName', 'VendorID']].drop_duplicates()
@@ -672,6 +672,10 @@ async def get_items():
         # Process all items
         all_items = []
         for _, row in items_df.iterrows():
+            # Apply search filter if provided
+            if search and search.lower() not in row['ItemName'].lower():
+                continue
+                
             try:
                 rate = float(str(row['Rate']).replace(',', ''))
             except (ValueError, TypeError):
@@ -686,6 +690,20 @@ async def get_items():
                 "vendor_name": row['VendorName'],
                 "vendor_id": row['VendorID']
             })
+        
+        if not all_items and search:
+            return {
+                "status": "warning",
+                "message": f"No items found matching search term: {search}",
+                "data": {
+                    "categories": [],
+                    "summary": {
+                        "total_categories": 0,
+                        "total_products": 0,
+                        "categories_distribution": {}
+                    }
+                }
+            }
         
         # Sort items by category and name
         all_items.sort(key=lambda x: (x['category'], x['item_name']))
