@@ -425,12 +425,8 @@ async def generate_purchase_order():
             item_total = quantity * rate
             total_amount += item_total
             
-            # Add unit based on item name
-            item_name = item['ItemName'].lower()
-            if 'potato' in item_name:
-                quantity_with_unit = f"{quantity} kg"
-            else:
-                quantity_with_unit = f"{quantity} units"
+            # Add kg to all quantities
+            quantity_with_unit = f"{quantity} kg"
             
             items.append(OrderItem(
                 BillNumber=po_number,
@@ -439,7 +435,7 @@ async def generate_purchase_order():
                 VendorID=vendor['VendorID'],
                 VendorName=vendor['VendorName'],
                 ItemName=item['ItemName'],
-                Quantity=quantity_with_unit,  # Now includes units
+                Quantity=quantity_with_unit,  # Now includes kg for all items
                 Rate=rate,
                 ItemTotal=item_total
             ))
