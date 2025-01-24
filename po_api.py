@@ -586,34 +586,13 @@ async def get_vendors():
         
         vendors = []
         for _, vendor_row in unique_vendors.iterrows():
-            # Filter data for this vendor
-            vendor_data = df[df['VendorName'] == vendor_row['VendorName']]
-            
-            # Calculate vendor statistics
-            total_items = vendor_data['ItemName'].nunique()
-            total_quantity = vendor_data['Quantity'].sum()
-            last_order = vendor_data['BillDate'].max()
-            
-            try:
-                last_order_date = pd.to_datetime(last_order).strftime('%Y-%m-%d') if pd.notnull(last_order) else None
-            except:
-                last_order_date = None
-            
             vendors.append({
                 "vendor_id": str(vendor_row['VendorID']),  # Ensure it's a string
-                "vendor_name": str(vendor_row['VendorName']),  # Ensure it's a string
-                "total_items": int(total_items),
-                "total_quantity": round(float(total_quantity), 2),
-                "last_order_date": last_order_date
+                "vendor_name": str(vendor_row['VendorName'])  # Ensure it's a string
             })
         
         # Sort vendors by name
         vendors.sort(key=lambda x: x['vendor_name'])
-        
-        # Print debug information
-        print(f"Found {len(vendors)} vendors")
-        for vendor in vendors:
-            print(f"Vendor: {vendor['vendor_name']}, ID: {vendor['vendor_id']}")
         
         return {
             "status": "success",
