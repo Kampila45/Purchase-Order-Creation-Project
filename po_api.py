@@ -798,50 +798,6 @@ async def get_items_by_vendor(vendor_name: str):
             detail=f"Error fetching items: {str(e)}"
         )
 
-@app.get("/api/v1/items/customer/{customer_name}")
-async def get_items_by_customer(customer_name: str):
-    """Get list of items filtered by customer"""
-    try:
-        df = load_data()
-        
-        # Clean customer name for case-insensitive comparison
-        customer_name = customer_name.strip().lower()
-        
-        # Filter items for the specified customer
-        customer_items = df[df['CustomerName'].str.lower() == customer_name][
-            ['ItemName', 'Rate', 'CustomerName', 'VendorName']
-        ].drop_duplicates()
-        
-        if customer_items.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No items found for customer: {customer_name}"
-            )
-        
-        items = []
-        for _, item in customer_items.iterrows():
-            items.append({
-                "item_name": item['ItemName'],
-                "rate": float(str(item['Rate']).replace(',', '')),
-                "customer_name": item['CustomerName'],
-                "vendor_name": item['VendorName']
-            })
-            
-        return {
-            "status": "success",
-            "customer": customer_items['CustomerName'].iloc[0],  # Use actual case from database
-            "count": len(items),
-            "items": items
-        }
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching items: {str(e)}"
-        )
-
 def categorize_item(item_name: str) -> str:
     """Categorize items based on actual dataset products"""
     item_name = item_name.lower()
